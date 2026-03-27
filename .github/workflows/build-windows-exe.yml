@@ -1,0 +1,74 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "export_delivery_statuses.py"
+      - "webui_server.py"
+      - "web/**"
+      - "requirements.txt"
+      - ".github/workflows/build-windows-exe.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exporter worker EXE
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --name export_delivery_statuses `
+            export_delivery_statuses.py
+
+      - name: Build web console EXE
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --name saby_export_console `
+            --add-data "web;web" `
+            webui_server.py
+
+      - name: Compose distributive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item dist/saby_export_console/* package/ -Recurse -Force
+          Copy-Item dist/export_delivery_statuses/export_delivery_statuses.exe package/ -Force
+          Copy-Item README.md package/ -Force
+          if (Test-Path versions.md) { Copy-Item versions.md package/ -Force }
+          if (Test-Path run_web.command) { Copy-Item run_web.command package/ -Force }
+          if (Test-Path start_console.command) { Copy-Item start_console.command package/ -Force }
+          Compress-Archive -Path package/* -DestinationPath saby_export_console_windows.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: saby_export_console_windows
+          path: saby_export_console_windows.zip
+          if-no-files-found: error
+

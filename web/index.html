@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Saby Export Console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="layout">
+    <section class="panel hero">
+      <h1>Saby Export Console</h1>
+      <p class="subtitle">Запуск выгрузки истории заказов и онлайн-лог выполнения</p>
+      <div id="version" class="version"></div>
+    </section>
+
+    <section class="panel controls">
+      <label for="scan-date">Дата сканирования</label>
+      <div class="row">
+        <input id="scan-date" type="date" />
+        <button id="run-btn" type="button">Запустить</button>
+        <button id="stop-btn" type="button" class="danger" disabled>Остановить</button>
+      </div>
+      <div class="row">
+        <select id="restaurant-filter">
+          <option value="">Все рестораны</option>
+        </select>
+      </div>
+      <p class="hint">Скрипт использует текущий профиль авторизации Saby. Если нужен пароль, вводите его в открывшемся браузере.</p>
+      <div class="status-row">
+        <span>Статус:</span>
+        <strong id="status">IDLE</strong>
+      </div>
+      <div class="row">
+        <button id="download-btn" type="button" class="ghost" disabled>Скачать Excel</button>
+        <button id="download-pdf-btn" type="button" class="ghost" disabled>Скачать PDF</button>
+      </div>
+      <div id="result" class="result"></div>
+    </section>
+
+    <section class="panel logs">
+      <div class="logs-head">
+        <h2>Лог</h2>
+        <div class="logs-actions">
+          <button id="copy-btn" type="button" class="ghost">Копировать</button>
+          <button id="toggle-log-btn" type="button" class="ghost">Скрыть лог</button>
+          <button id="clear-btn" type="button" class="ghost">Очистить</button>
+        </div>
+      </div>
+      <pre id="log-box"></pre>
+    </section>
+
+    <section id="analytics-panel" class="panel analytics hidden">
+      <div class="analytics-head">
+        <h2>Аналитика доставки</h2>
+        <button id="refresh-analytics-btn" type="button" class="ghost">Обновить</button>
+      </div>
+      <p id="analytics-meta" class="hint"></p>
+
+      <div id="kpi-grid" class="kpi-grid"></div>
+
+      <div class="analytics-grid">
+        <article class="analytics-card">
+          <h3>Этапы (среднее / P90)</h3>
+          <div id="stage-bars" class="bars"></div>
+        </article>
+        <article class="analytics-card">
+          <h3>Узкие места по статусам</h3>
+          <div id="bottleneck-bars" class="bars"></div>
+        </article>
+      </div>
+
+      <article class="analytics-card">
+        <h3>Нагрузка по времени (по часу старта заказа)</h3>
+        <div id="load-bars" class="bars"></div>
+      </article>
+
+      <article class="analytics-card">
+        <h3>Рестораны с риском опозданий</h3>
+        <div id="hotspots-table" class="table-wrap"></div>
+      </article>
+
+      <article class="analytics-card">
+        <h3>Проблемные заказы (опоздание &gt; 60 минут)</h3>
+        <div id="problem-table" class="table-wrap"></div>
+      </article>
+
+      <article class="analytics-card">
+        <h3>Все заказы за день</h3>
+        <div id="orders-table" class="table-wrap"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/version.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

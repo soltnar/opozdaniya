@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Saby Export Console</title>
+  <style>
+    :root {
+      --bg: #f2efe8;
+      --card: #fffdfa;
+      --ink: #1f2328;
+      --muted: #5c6670;
+      --accent: #115e59;
+      --warn: #92400e;
+      --error: #9f1239;
+      --ok: #166534;
+      --line: #dfd9cf;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: radial-gradient(circle at 10% 10%, #ffffff, var(--bg));
+    }
+    .layout {
+      max-width: 960px;
+      margin: 24px auto;
+      padding: 0 14px;
+      display: grid;
+      gap: 14px;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 10px 24px rgba(31, 35, 40, 0.06);
+    }
+    h1, h2 { margin: 0 0 8px; }
+    .subtitle { margin: 0; color: var(--muted); }
+    .version { margin-top: 8px; color: var(--muted); font-size: 13px; }
+    .controls label { display: block; margin-bottom: 6px; font-weight: 600; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input[type="date"] {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 16px;
+      min-width: 220px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    button.ghost { background: #d6d3d1; color: #111827; }
+    .hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+    .status-row { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+    #status.running { color: var(--warn); }
+    #status.success { color: var(--ok); }
+    #status.error { color: var(--error); }
+    .result { margin-top: 8px; font-size: 14px; }
+    .result a { color: var(--accent); }
+    .logs-head { display: flex; justify-content: space-between; align-items: center; }
+    #log-box {
+      margin: 10px 0 0;
+      min-height: 360px;
+      max-height: 65vh;
+      overflow: auto;
+      background: #0f172a;
+      color: #d1fae5;
+      border-radius: 10px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    @media (max-width: 640px) {
+      .layout { margin: 12px auto; }
+      #log-box { min-height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="layout">
+    <section class="panel hero">
+      <h1>Saby Export Console</h1>
+      <p class="subtitle">Запуск выгрузки истории заказов и онлайн-лог выполнения</p>
+      <div id="version" class="version">version 2026.03.26-web.2 · updated 2026-03-26</div>
+    </section>
+
+    <section class="panel controls">
+      <label for="scan-date">Дата сканирования</label>
+      <div class="row">
+        <input id="scan-date" type="date" />
+        <button id="run-btn" type="button">Запустить</button>
+      </div>
+      <p class="hint">Откройте сначала <code>run_web.command</code>, затем работайте из этого <code>index.html</code>.</p>
+      <div class="status-row">
+        <span>Статус:</span>
+        <strong id="status">IDLE</strong>
+      </div>
+      <div id="result" class="result"></div>
+    </section>
+
+    <section class="panel logs">
+      <div class="logs-head">
+        <h2>Лог</h2>
+        <button id="clear-btn" type="button" class="ghost">Очистить</button>
+      </div>
+      <pre id="log-box"></pre>
+    </section>
+  </main>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:8765';
+    const dateInput = document.getElementById('scan-date');
+    const runBtn = document.getElementById('run-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const statusEl = document.getElementById('status');
+    const logBox = document.getElementById('log-box');
+    const resultEl = document.getElementById('result');
+
+    let activeJobId = null;
+    let pollTimer = null;
+    let logOffset = 0;
+
+    function todayIso() {
+      const now = new Date();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      return `${now.getFullYear()}-${m}-${d}`;
+    }
+
+    function setStatus(text, cls = '') {
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    }
+
+    function appendLogs(lines) {
+      if (!lines || !lines.length) return;
+      logBox.textContent += lines.join('\n') + '\n';
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(`${API_BASE}${path}`, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
+
+    async function checkBackend() {
+      try {
+        await api('/api/health');
+        appendLogs([`[web] backend доступен: ${API_BASE}`]);
+      } catch (err) {
+        setStatus('ERROR', 'error');
+        appendLogs([
+          '[web] backend не доступен.',
+          '[web] Запустите run_web.command и обновите страницу.',
+          `[web] detail: ${err.message}`,
+        ]);
+      }
+    }
+
+    async function runExport() {
+      const date = dateInput.value;
+      if (!date) {
+        alert('Укажите дату.');
+        return;
+      }
+
+      runBtn.disabled = true;
+      resultEl.textContent = '';
+      logBox.textContent = '';
+      logOffset = 0;
+      setStatus('RUNNING', 'running');
+
+      try {
+        const payload = await api('/api/run', {
+          method: 'POST',
+          body: JSON.stringify({ date }),
+        });
+
+        activeJobId = payload.job_id;
+        appendLogs([`[web] Запущена задача ${activeJobId} за ${date}`]);
+        startPolling();
+      } catch (err) {
+        setStatus('ERROR', 'error');
+        appendLogs([`[web] Ошибка запуска: ${err.message}`]);
+        runBtn.disabled = false;
+      }
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(async () => {
+        if (!activeJobId) return;
+        try {
+          const data = await api(`/api/job/${activeJobId}?from=${logOffset}`);
+          appendLogs(data.logs || []);
+          logOffset = data.log_size || logOffset;
+
+          if (data.status === 'success') {
+            setStatus('SUCCESS', 'success');
+            runBtn.disabled = false;
+            stopPolling();
+            resultEl.innerHTML = data.output_path
+              ? `Готово: <code>${data.output_path}</code>`
+              : 'Готово';
+          } else if (data.status === 'error') {
+            setStatus('ERROR', 'error');
+            runBtn.disabled = false;
+            stopPolling();
+            resultEl.textContent = data.error ? `Ошибка: ${data.error}` : 'Ошибка';
+          }
+        } catch (err) {
+          appendLogs([`[web] Ошибка опроса: ${err.message}`]);
+        }
+      }, 1500);
+    }
+
+    runBtn.addEventListener('click', runExport);
+    clearBtn.addEventListener('click', () => {
+      logBox.textContent = '';
+      resultEl.textContent = '';
+      logOffset = 0;
+    });
+
+    dateInput.value = todayIso();
+    setStatus('IDLE');
+    checkBackend();
+  </script>
+</body>
+</html>

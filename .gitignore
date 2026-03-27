@@ -1,0 +1,10 @@
+.DS_Store
+.venv/
+.saby_profile/
+.saby_profile_runs/
+exports/
+.webui.log
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
