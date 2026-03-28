@@ -7,6 +7,7 @@ const clearBtn = document.getElementById('clear-btn');
 const copyBtn = document.getElementById('copy-btn');
 const toggleLogBtn = document.getElementById('toggle-log-btn');
 const restaurantFilterEl = document.getElementById('restaurant-filter');
+const sortFilterEl = document.getElementById('sort-filter');
 const statusEl = document.getElementById('status');
 const logBox = document.getElementById('log-box');
 const resultEl = document.getElementById('result');
@@ -29,6 +30,7 @@ let logOffset = 0;
 let currentAnalyticsDate = null;
 const SELECTED_DATE_KEY = 'saby_selected_date';
 const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurant';
+const SELECTED_SORT_KEY = 'saby_selected_sort';
 
 function todayIso() {
   const now = new Date();
@@ -114,6 +116,10 @@ function resetAnalyticsUi() {
 
 function selectedRestaurant() {
   return String(restaurantFilterEl?.value || '').trim();
+}
+
+function selectedSort() {
+  return String(sortFilterEl?.value || 'restaurant_asc').trim();
 }
 
 function renderBars(container, rows, valueKey, maxValue, valueFormatter) {
@@ -365,7 +371,15 @@ function renderAnalytics(data) {
   analyticsPanel.classList.remove('hidden');
   currentAnalyticsDate = data.date || null;
   const restaurantCaption = data.restaurant_filter || selectedRestaurant() || 'Все рестораны';
-  const baseMeta = `Дата: ${data.date || '—'} · ресторан: ${restaurantCaption} · файл: ${data.output_path || '—'}`;
+  const sortCaptionMap = {
+    restaurant_asc: 'ресторан A→Я',
+    restaurant_desc: 'ресторан Я→A',
+    total_desc: 'дольше всего',
+    promised_delta_desc: 'сильнее опоздали к плану',
+    promised_time_asc: 'по плановому времени',
+  };
+  const sortCaption = sortCaptionMap[data.sort_mode || selectedSort()] || 'ресторан A→Я';
+  const baseMeta = `Дата: ${data.date || '—'} · ресторан: ${restaurantCaption} · сортировка: ${sortCaption} · файл: ${data.output_path || '—'}`;
   analyticsMetaEl.textContent = data.notice ? `${baseMeta} · ${data.notice}` : baseMeta;
 
   renderKpis(data.kpi || {}, data.thresholds || {});
@@ -400,6 +414,7 @@ function renderAnalytics(data) {
 async function loadAnalytics(options = {}) {
   const selectedDate = String(dateInput.value || '').trim();
   const restaurant = selectedRestaurant();
+  const sort = selectedSort();
   const useSelectedDate = Boolean(options.useSelectedDate) && Boolean(selectedDate);
   if (!activeJobId && !useSelectedDate) return false;
   try {
@@ -411,6 +426,9 @@ async function loadAnalytics(options = {}) {
     }
     if (restaurant) {
       params.set('restaurant', restaurant);
+    }
+    if (sort) {
+      params.set('sort', sort);
     }
     const query = params.toString();
     const payload = await api(`/api/analytics?${query}`);
@@ -429,6 +447,9 @@ async function loadAnalytics(options = {}) {
     }
     if (restaurant) {
       localStorage.setItem(SELECTED_RESTAURANT_KEY, restaurant);
+    }
+    if (sort) {
+      localStorage.setItem(SELECTED_SORT_KEY, sort);
     }
     renderAnalytics(payload);
     return true;
@@ -596,12 +617,19 @@ function startPolling() {
 runBtn.addEventListener('click', runExport);
 stopBtn.addEventListener('click', stopExport);
 downloadBtn.addEventListener('click', () => {
-  if (currentAnalyticsDate) {
-    window.open(`/api/download?date=${encodeURIComponent(currentAnalyticsDate)}`, '_blank');
-    return;
+  const date = currentAnalyticsDate || String(dateInput.value || '').trim();
+  if (!date) return;
+  const params = new URLSearchParams();
+  params.set('date', date);
+  const restaurant = selectedRestaurant();
+  if (restaurant) {
+    params.set('restaurant', restaurant);
   }
-  if (!activeJobId) return;
-  window.open(`/api/download?job_id=${encodeURIComponent(activeJobId)}`, '_blank');
+  const sort = selectedSort();
+  if (sort) {
+    params.set('sort', sort);
+  }
+  window.open(`/api/download?${params.toString()}`, '_blank');
 });
 downloadPdfBtn.addEventListener('click', () => {
   const date = currentAnalyticsDate || String(dateInput.value || '').trim();
@@ -611,6 +639,10 @@ downloadPdfBtn.addEventListener('click', () => {
   const restaurant = selectedRestaurant();
   if (restaurant) {
     params.set('restaurant', restaurant);
+  }
+  const sort = selectedSort();
+  if (sort) {
+    params.set('sort', sort);
   }
   window.open(`/api/report_pdf?${params.toString()}`, '_blank');
 });
@@ -631,6 +663,16 @@ restaurantFilterEl.addEventListener('change', () => {
     localStorage.setItem(SELECTED_RESTAURANT_KEY, restaurant);
   } else {
     localStorage.removeItem(SELECTED_RESTAURANT_KEY);
+  }
+  if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
+  loadAnalytics({ useSelectedDate: true });
+});
+sortFilterEl.addEventListener('change', () => {
+  const sort = selectedSort();
+  if (sort) {
+    localStorage.setItem(SELECTED_SORT_KEY, sort);
+  } else {
+    localStorage.removeItem(SELECTED_SORT_KEY);
   }
   if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
   loadAnalytics({ useSelectedDate: true });
@@ -671,6 +713,7 @@ toggleLogBtn.addEventListener('click', () => {
 });
 
 dateInput.value = localStorage.getItem(SELECTED_DATE_KEY) || todayIso();
+sortFilterEl.value = localStorage.getItem(SELECTED_SORT_KEY) || 'restaurant_asc';
 loadRestaurantsForDate(dateInput.value);
 if (window.APP_META) {
   versionEl.textContent = `version ${window.APP_META.version} · updated ${window.APP_META.updatedAt}`;

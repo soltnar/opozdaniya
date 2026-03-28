@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.56",
+  version: "2026.03.28-web.57",
   updatedAt: "2026-03-28",
-  notes: "Windows EXE fix: принудительное включение greenlet._greenlet (hidden-import + collect-binaries)"
+  notes: "Excel-кнопка теперь отдает готовый аналитический отчет; добавлена сортировка заказов (в т.ч. по ресторанам)"
 };

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
@@ -287,7 +287,83 @@ def _resolve_output_by_date(date_value: str):
     return file_path
 
 
-def build_analytics_payload(file_path: Path, restaurant_filter: str | None = None) -> dict:
+def _sort_orders(rows: list[dict], sort_mode: str | None) -> list[dict]:
+    mode = (sort_mode or "restaurant_asc").strip().lower()
+
+    def _flt(value: Any, default: float = -1e12) -> float:
+        try:
+            v = float(value)
+            if math.isnan(v) or math.isinf(v):
+                return default
+            return v
+        except Exception:
+            return default
+
+    def _dt(value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        s = str(value).strip().replace("T", " ").replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+
+    if mode == "restaurant_desc":
+        return sorted(
+            rows,
+            key=lambda x: (
+                str(x.get("restaurant") or "").lower(),
+                _flt(x.get("total_min"), default=-1.0),
+                str(x.get("number") or x.get("sale") or ""),
+            ),
+            reverse=True,
+        )
+    if mode == "total_desc":
+        return sorted(
+            rows,
+            key=lambda x: (
+                _flt(x.get("total_min"), default=-1.0),
+                str(x.get("restaurant") or "").lower(),
+            ),
+            reverse=True,
+        )
+    if mode == "promised_delta_desc":
+        return sorted(
+            rows,
+            key=lambda x: (
+                _flt(x.get("promised_delta_min"), default=-1.0),
+                _flt(x.get("total_min"), default=-1.0),
+                str(x.get("restaurant") or "").lower(),
+            ),
+            reverse=True,
+        )
+    if mode == "promised_time_asc":
+        return sorted(
+            rows,
+            key=lambda x: (
+                _dt(x.get("promised_time")) or datetime.max,
+                str(x.get("restaurant") or "").lower(),
+                str(x.get("number") or x.get("sale") or ""),
+            ),
+        )
+    return sorted(
+        rows,
+        key=lambda x: (
+            str(x.get("restaurant") or "").lower(),
+            _flt(x.get("promised_delta_min"), default=-1.0),
+            _flt(x.get("total_min"), default=-1.0),
+            str(x.get("number") or x.get("sale") or ""),
+        ),
+    )
+
+
+def build_analytics_payload(
+    file_path: Path,
+    restaurant_filter: str | None = None,
+    sort_mode: str | None = None,
+) -> dict:
     wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
 
     def parse_dt(value):
@@ -612,14 +688,6 @@ def build_analytics_payload(file_path: Path, restaurant_filter: str | None = Non
             "max": max(values),
         }
 
-    detailed_orders.sort(
-        key=lambda x: (
-            0 if x.get("overdue") else 1,
-            -(x.get("total_min") or 0.0),
-            str(x.get("restaurant") or ""),
-        )
-    )
-
     restaurant_filter = (restaurant_filter or "").strip()
     if restaurant_filter:
         target = norm_status(restaurant_filter)
@@ -628,6 +696,7 @@ def build_analytics_payload(file_path: Path, restaurant_filter: str | None = Non
             for row in detailed_orders
             if norm_status(row.get("restaurant")) == target
         ]
+    detailed_orders = _sort_orders(detailed_orders, sort_mode)
 
     processing_vals = [float(x["processing_min"]) for x in detailed_orders if isinstance(x.get("processing_min"), (int, float))]
     cooking_vals = [float(x["cooking_min"]) for x in detailed_orders if isinstance(x.get("cooking_min"), (int, float))]
@@ -757,6 +826,7 @@ def build_analytics_payload(file_path: Path, restaurant_filter: str | None = Non
         "load_by_hour": load_by_hour,
         "orders": detailed_orders,
         "restaurant_filter": restaurant_filter or None,
+        "sort_mode": (sort_mode or "restaurant_asc"),
     }
 
 
@@ -805,8 +875,8 @@ def _list_restaurants(file_path: Path) -> list[str]:
     return sorted(names)
 
 
-def _build_pdf_report(file_path: Path, restaurant_filter: str | None) -> bytes:
-    payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter)
+def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
+    payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
     kpi = payload.get("kpi") or {}
     threshold = float((payload.get("thresholds") or {}).get("overdue_total_min", 60.0))
@@ -905,6 +975,118 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None) -> bytes:
     story.append(table)
     doc.build(story)
     return buffer.getvalue()
+
+
+def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
+    payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
+    rows = payload.get("orders") or []
+    kpi = payload.get("kpi") or {}
+    threshold = float((payload.get("thresholds") or {}).get("overdue_total_min", 60.0))
+
+    wb = Workbook()
+    ws_kpi = wb.active
+    ws_kpi.title = "Сводка"
+    ws_kpi.append(["Показатель", "Значение"])
+    ws_kpi.append(["Дата", file_path.stem.replace("order_status_history_", "")])
+    ws_kpi.append(["Ресторан", restaurant_filter or "Все рестораны"])
+    ws_kpi.append(["Сортировка", sort_mode or "restaurant_asc"])
+    ws_kpi.append(["Заказов", kpi.get("orders")])
+    ws_kpi.append(["Опозданий > 60 мин", kpi.get("overdue_count")])
+    ws_kpi.append(["Доля опозданий, %", kpi.get("overdue_rate")])
+    ws_kpi.append(["Среднее время заказа, мин", kpi.get("avg_total_min")])
+    ws_kpi.append(["P90 времени заказа, мин", kpi.get("p90_total_min")])
+    ws_kpi.append(["Средняя доставка, мин", kpi.get("avg_delivery_min")])
+    ws_kpi.append(["P90 доставка, мин", kpi.get("p90_delivery_min")])
+
+    ws_orders = wb.create_sheet("Заказы")
+    ws_orders.append(
+        [
+            "Ресторан",
+            "Заказ",
+            "Тип",
+            "Старт",
+            "К какому времени",
+            "Факт (выполнен)",
+            "Δ план/факт (мин)",
+            "Итого (мин)",
+            "Обработка",
+            "Готовка",
+            "Сборка",
+            "Доставка/Выдача",
+            "Курьер",
+            "Оператор",
+            "Узкое место",
+            "Причина",
+            "Опоздание > 60 мин",
+        ]
+    )
+    for row in rows:
+        last_stage = row.get("pickup_wait_min") if row.get("order_type") == "Самовывоз" else row.get("delivery_min")
+        ws_orders.append(
+            [
+                row.get("restaurant"),
+                row.get("number") or row.get("sale"),
+                row.get("order_type"),
+                row.get("start_time"),
+                row.get("promised_time"),
+                row.get("done_time"),
+                row.get("promised_delta_min"),
+                row.get("total_min"),
+                row.get("processing_min"),
+                row.get("cooking_min"),
+                row.get("assembly_min"),
+                last_stage,
+                row.get("courier"),
+                row.get("operator"),
+                row.get("bottleneck_stage"),
+                row.get("delay_reason"),
+                "ДА" if row.get("total_min") is not None and float(row.get("total_min")) > threshold else "",
+            ]
+        )
+
+    ws_problem = wb.create_sheet("Проблемные")
+    ws_problem.append(
+        [
+            "Ресторан",
+            "Заказ",
+            "Тип",
+            "К какому времени",
+            "Факт (выполнен)",
+            "Δ план/факт (мин)",
+            "Итого (мин)",
+            "Этапы (обраб/готов/сбор/дост)",
+            "Узкое место",
+            "Причина",
+        ]
+    )
+    for row in rows:
+        total = row.get("total_min")
+        if not isinstance(total, (int, float)) or float(total) <= threshold:
+            continue
+        last_stage = row.get("pickup_wait_min") if row.get("order_type") == "Самовывоз" else row.get("delivery_min")
+        ws_problem.append(
+            [
+                row.get("restaurant"),
+                row.get("number") or row.get("sale"),
+                row.get("order_type"),
+                row.get("promised_time"),
+                row.get("done_time"),
+                row.get("promised_delta_min"),
+                total,
+                (
+                    f"{(row.get('processing_min') or 0):.1f} / "
+                    f"{(row.get('cooking_min') or 0):.1f} / "
+                    f"{(row.get('assembly_min') or 0):.1f} / "
+                    f"{(last_stage or 0):.1f}"
+                ),
+                f"{row.get('bottleneck_stage') or '—'} ({(row.get('bottleneck_min') or 0):.1f})",
+                row.get("delay_reason"),
+            ]
+        )
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1020,14 +1202,25 @@ class Handler(BaseHTTPRequestHandler):
             if requested_id is not None:
                 requested_id = str(requested_id).strip() or None
             requested_date = (qs.get("date", [None])[0] or None)
+            restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            sort_mode = (qs.get("sort", [None])[0] or None)
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
+            if restaurant_filter is not None:
+                restaurant_filter = str(restaurant_filter).strip() or None
+            if sort_mode is not None:
+                sort_mode = str(sort_mode).strip() or None
 
             try:
                 if requested_date:
                     file_path = _resolve_output_by_date(requested_date)
                 else:
                     _, _, file_path = _resolve_job_output(requested_id)
+                content = _build_excel_report(
+                    file_path,
+                    restaurant_filter=restaurant_filter,
+                    sort_mode=sort_mode,
+                )
             except RuntimeError as err:
                 message = str(err)
                 if message == "job not found":
@@ -1041,9 +1234,15 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json({"error": message}, status=404)
                 return
+            except Exception as err:  # noqa: BLE001
+                self.send_json({"error": f"excel report failed: {err}"}, status=500)
+                return
 
-            content = file_path.read_bytes()
-            filename = file_path.name
+            suffix = requested_date or "latest"
+            if restaurant_filter:
+                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", restaurant_filter)[:40]
+                suffix = f"{suffix}_{safe_name}"
+            filename = f"delivery_report_{suffix}.xlsx"
             self.send_response(200)
             self.send_header(
                 "Content-Type",
@@ -1082,16 +1281,23 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             requested_date = (qs.get("date", [None])[0] or None)
             restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            sort_mode = (qs.get("sort", [None])[0] or None)
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
             if restaurant_filter is not None:
                 restaurant_filter = str(restaurant_filter).strip() or None
+            if sort_mode is not None:
+                sort_mode = str(sort_mode).strip() or None
             if not requested_date:
                 self.send_json({"error": "date is required"}, status=400)
                 return
             try:
                 file_path = _resolve_output_by_date(requested_date)
-                content = _build_pdf_report(file_path, restaurant_filter=restaurant_filter)
+                content = _build_pdf_report(
+                    file_path,
+                    restaurant_filter=restaurant_filter,
+                    sort_mode=sort_mode,
+                )
             except RuntimeError as err:
                 message = str(err)
                 code = 404
@@ -1127,8 +1333,11 @@ class Handler(BaseHTTPRequestHandler):
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
             restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            sort_mode = (qs.get("sort", [None])[0] or None)
             if restaurant_filter is not None:
                 restaurant_filter = str(restaurant_filter).strip() or None
+            if sort_mode is not None:
+                sort_mode = str(sort_mode).strip() or None
             try:
                 if requested_date:
                     file_path = _resolve_output_by_date(requested_date)
@@ -1136,7 +1345,11 @@ class Handler(BaseHTTPRequestHandler):
                     job = {"date": requested_date}
                 else:
                     target_id, job, file_path = _resolve_job_output(requested_id)
-                payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter)
+                payload = build_analytics_payload(
+                    file_path,
+                    restaurant_filter=restaurant_filter,
+                    sort_mode=sort_mode,
+                )
             except RuntimeError as err:
                 message = str(err)
                 if message == "job not found":
