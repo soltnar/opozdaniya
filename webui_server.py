@@ -275,12 +275,14 @@ def stop_job(job_id: str | None = None) -> dict:
     return {"job_id": target_id, "status": job.get("status", "stopping")}
 
 
-def run_embedded_worker(date_value: str) -> int:
+def run_embedded_worker(date_value: str, har_path: str | None = None) -> int:
     # Worker mode for frozen single-exe build: execute export script inside this process.
     import export_delivery_statuses  # noqa: PLC0415
 
     saved_argv = list(sys.argv)
     sys.argv = ["export_delivery_statuses.py", "--date", date_value]
+    if har_path:
+        sys.argv.extend(["--har", har_path])
     try:
         try:
             result = export_delivery_statuses.main()
@@ -1631,7 +1633,13 @@ def main() -> int:
         except Exception:
             print("worker mode requires --date YYYY-MM-DD")
             return 2
-        return run_embedded_worker(str(date_value))
+        har_path = None
+        try:
+            hidx = sys.argv.index("--har")
+            har_path = sys.argv[hidx + 1]
+        except Exception:
+            har_path = None
+        return run_embedded_worker(str(date_value), har_path=har_path)
 
     worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():
