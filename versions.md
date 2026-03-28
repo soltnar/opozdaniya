@@ -295,3 +295,8 @@
 ## 2026-03-28-web.53
 - Исправлен падение Windows-сборки на старте (`ModuleNotFoundError: reportlab`).
 - `reportlab` добавлен в `requirements.txt`, чтобы GitHub Actions устанавливала библиотеку перед сборкой `saby_export_console.exe`.
+
+## 2026-03-28-web.54
+- Улучшен UX Windows-запуска:
+  - `start_windows_console.bat` теперь автоматически открывает браузер на `http://127.0.0.1:8765`,
+  - консоль продолжает работать как сервер, лог пишется в `console.log`.
