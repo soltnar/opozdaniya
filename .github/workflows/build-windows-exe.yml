@@ -41,7 +41,11 @@ jobs:
             --clean `
             --onedir `
             --name export_delivery_statuses `
+            --hidden-import greenlet `
+            --hidden-import greenlet._greenlet `
             --collect-all greenlet `
+            --collect-submodules greenlet `
+            --collect-binaries greenlet `
             --collect-all playwright `
             export_delivery_statuses.py
 

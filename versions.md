@@ -308,3 +308,9 @@
   - `--collect-all greenlet`
   - `--collect-all playwright`
   чтобы гарантированно включать бинарные модули и runtime-компоненты Playwright.
+
+## 2026-03-28-web.56
+- Усилен фикс упаковки `greenlet` для Windows worker-EXE:
+  - добавлены `--hidden-import greenlet` и `--hidden-import greenlet._greenlet`,
+  - добавлены `--collect-submodules greenlet` и `--collect-binaries greenlet`.
+- Цель: гарантированно подтянуть бинарный модуль `greenlet._greenlet` в `export_delivery_statuses.exe`.
