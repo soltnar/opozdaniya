@@ -26,6 +26,8 @@ DEFAULT_HAR_CANDIDATES = [
     "/Users/macbook/Downloads/rest.saby.ru history.har",
 ]
 
+DEFAULT_SERVICE_URL = "https://rest.saby.ru/service/"
+
 ALLOWED_BASE_HEADERS = {
     "accept",
     "content-type",
@@ -206,6 +208,80 @@ def resolve_har_path(raw_value: str) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def make_default_history_payload_template() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "protocol": 7,
+        "id": 1,
+        "method": "История.History_Of_Instance",
+        "params": {
+            "Фильтр": {
+                "d": [None, None, ["Изменение статуса заказа"]],
+                "s": [
+                    {"t": "Строка", "n": "GUID"},
+                    {"t": "Число целое", "n": "ИдО"},
+                    {"t": "Массив", "n": "Действие"},
+                ],
+                "_type": "record",
+                "f": 0,
+            },
+            "Навигация": {
+                "d": ["forward", True, 24, None],
+                "s": [
+                    {"t": "Строка", "n": "Direction"},
+                    {"t": "Логическое", "n": "HasMore"},
+                    {"t": "Число целое", "n": "Limit"},
+                    {"t": "Запись", "n": "Position"},
+                ],
+                "_type": "record",
+                "f": 0,
+            },
+        },
+    }
+
+
+def make_runtime_fallback_templates(
+    runtime_sale_payload: dict[str, Any] | None,
+    runtime_sale_called_method: str | None,
+) -> TemplateBundle:
+    if not isinstance(runtime_sale_payload, dict) or not isinstance(runtime_sale_payload.get("params"), dict):
+        raise RuntimeError(
+            "Не удалось получить runtime-шаблон SaleOrder.List. "
+            "Откройте страницу доставки, выберите дату и вкладку 'Выполнен', затем повторите запуск."
+        )
+
+    sale_payload = copy.deepcopy(runtime_sale_payload)
+    sale_payload.setdefault("method", "SaleOrder.List")
+    sale_called_method = runtime_sale_called_method or "SaleOrder.List"
+
+    history_payload = make_default_history_payload_template()
+
+    sale_position_field, sale_position_type = extract_position_meta(
+        sale_payload,
+        default_field_name="NextDateWTZText",
+        default_field_type="Строка",
+    )
+    history_position_field, history_position_type = extract_position_meta(
+        history_payload,
+        default_field_name="_time",
+        default_field_type="Дата и время",
+    )
+
+    return TemplateBundle(
+        service_url=DEFAULT_SERVICE_URL,
+        base_headers=dict(DEFAULT_BASE_HEADERS),
+        sale_payload_template=sale_payload,
+        sale_called_method=sale_called_method,
+        sale_position_field=sale_position_field,
+        sale_position_type=sale_position_type,
+        har_sale_delivery_context=False,
+        history_payload_template=history_payload,
+        history_called_method="Istoriya.History_Of_Instance",
+        history_position_field=history_position_field,
+        history_position_type=history_position_type,
+    )
 
 
 def parse_date(value: str) -> date:
@@ -540,12 +616,14 @@ def build_templates_from_har(har_data: dict[str, Any], active_har_path: Path | N
     history_picked = try_pick_history_template(entries)
     if history_picked is None and active_har_path is not None:
         history_picked = load_history_template_from_fallback_har(active_har_path)
-    if history_picked is None:
-        raise RuntimeError("Не найден подходящий шаблон История.History_Of_Instance в HAR")
-    _, history_payload, history_called_method, history_body_method = history_picked
 
     sale_payload["method"] = sale_body_method
-    history_payload["method"] = history_body_method
+    if history_picked is None:
+        history_payload = make_default_history_payload_template()
+        history_called_method = "Istoriya.History_Of_Instance"
+    else:
+        _, history_payload, history_called_method, history_body_method = history_picked
+        history_payload["method"] = history_body_method
 
     sale_position_field, sale_position_type = extract_position_meta(
         sale_payload,
@@ -1907,19 +1985,19 @@ def main() -> int:
         return 2
 
     har_path = resolve_har_path(args.har)
-    if not har_path:
-        print(
-            "Ошибка: HAR файл не найден. Проверены варианты: "
+    templates: TemplateBundle | None = None
+    har_error: str | None = None
+    if har_path:
+        try:
+            har_data = read_json(har_path)
+            templates = build_templates_from_har(har_data, active_har_path=har_path)
+        except Exception as err:  # noqa: BLE001
+            har_error = str(err)
+    else:
+        har_error = (
+            "HAR файл не найден. Проверены варианты: "
             + ", ".join(DEFAULT_HAR_CANDIDATES)
         )
-        return 2
-
-    try:
-        har_data = read_json(har_path)
-        templates = build_templates_from_har(har_data, active_har_path=har_path)
-    except Exception as err:  # noqa: BLE001
-        print(f"Ошибка чтения HAR: {err}")
-        return 2
 
     output_path = get_output_path(target_date, args.output)
 
@@ -1927,7 +2005,12 @@ def main() -> int:
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Дата сканирования: {target_date:%Y-%m-%d}")
-    print(f"HAR шаблон: {har_path}")
+    if templates is not None and har_path is not None:
+        print(f"HAR шаблон: {har_path}")
+    else:
+        print("HAR шаблон: не используется (runtime fallback)")
+        if har_error:
+            print(f"Предупреждение HAR: {har_error}")
     print(f"Профиль браузера: {profile_dir}")
 
     with sync_playwright() as p:
@@ -1949,6 +2032,15 @@ def main() -> int:
                 runtime_sale_called_method,
                 runtime_sale_is_done,
             ) = capture_runtime_service_meta(page)
+            if templates is None:
+                templates = make_runtime_fallback_templates(
+                    runtime_sale_payload=runtime_sale_payload,
+                    runtime_sale_called_method=runtime_sale_called_method,
+                )
+                print(
+                    "HAR недоступен/неподходящий. Перехожу в полностью автоматический runtime-режим."
+                )
+
             service_url = merge_service_url(templates.service_url, runtime_service_url)
             base_headers = merge_headers(templates.base_headers, runtime_headers)
             har_delivery_context = bool(templates.har_sale_delivery_context)

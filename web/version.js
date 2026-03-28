@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.61",
+  version: "2026.03.28-web.62",
   updatedAt: "2026-03-28",
-  notes: "Windows worker now correctly forwards --har from UI/auto-detect into embedded exporter"
+  notes: "No-manual-HAR fallback: runtime auto mode + built-in history template when HAR is missing/incomplete"
 };
