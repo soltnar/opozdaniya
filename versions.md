@@ -291,3 +291,7 @@
   - пишет лог в `console.log`,
   - не закрывает окно сразу при ошибке (`pause`), чтобы видеть причину.
 - В CI-сборку (`build-windows-exe.yml`) добавлено включение `start_windows_console.bat` в дистрибутив.
+
+## 2026-03-28-web.53
+- Исправлен падение Windows-сборки на старте (`ModuleNotFoundError: reportlab`).
+- `reportlab` добавлен в `requirements.txt`, чтобы GitHub Actions устанавливала библиотеку перед сборкой `saby_export_console.exe`.
