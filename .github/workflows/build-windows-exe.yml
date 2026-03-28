@@ -59,6 +59,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item dist/saby_export_console/* package/ -Recurse -Force
           Copy-Item dist/export_delivery_statuses/export_delivery_statuses.exe package/ -Force
+          Copy-Item start_windows_console.bat package/ -Force
           Copy-Item README.md package/ -Force
           if (Test-Path versions.md) { Copy-Item versions.md package/ -Force }
           if (Test-Path run_web.command) { Copy-Item run_web.command package/ -Force }
@@ -71,4 +72,3 @@ jobs:
           name: saby_export_console_windows
           path: saby_export_console_windows.zip
           if-no-files-found: error
-

@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.51",
+  version: "2026.03.28-web.52",
   updatedAt: "2026-03-28",
-  notes: "Добавлена CI-сборка Windows EXE + запуск worker export_delivery_statuses.exe из web-консоли"
+  notes: "Исправлен старт Windows EXE (поддержка worker exe в main) + добавлен start_windows_console.bat и console.log"
 };

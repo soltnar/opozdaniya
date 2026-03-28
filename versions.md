@@ -282,3 +282,12 @@
 - Добавлена поддержка запуска worker-экспорта из веб-консоли в exe-режиме:
   - `webui_server.py` теперь ищет рядом `export_delivery_statuses.exe` и запускает его напрямую,
   - если worker `.exe` не найден, используется прежний python-режим (`python export_delivery_statuses.py`).
+
+## 2026-03-28-web.52
+- Исправлен мгновенный выход `saby_export_console.exe` на Windows:
+  - в `main()` проверка наличия экспортера теперь учитывает `export_delivery_statuses.exe`, а не только `export_delivery_statuses.py`.
+- Добавлен Windows-лаунчер `start_windows_console.bat`:
+  - запускает консоль из текущей папки,
+  - пишет лог в `console.log`,
+  - не закрывает окно сразу при ошибке (`pause`), чтобы видеть причину.
+- В CI-сборку (`build-windows-exe.yml`) добавлено включение `start_windows_console.bat` в дистрибутив.

@@ -1226,11 +1226,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():
         print(f"web dir not found: {WEB_DIR}")
         return 2
-    if not EXPORT_SCRIPT.exists():
+    if not EXPORT_SCRIPT.exists() and not worker_exe.exists():
         print(f"export script not found: {EXPORT_SCRIPT}")
+        print(f"worker exe not found: {worker_exe}")
         return 2
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
