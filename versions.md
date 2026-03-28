@@ -344,3 +344,10 @@
 - Перепакован Windows-runtime:
   - worker запускается в режиме `--worker` внутри `saby_export_console.exe` (тот же бинарь),
   - это убирает зависимость от отдельного `export_delivery_statuses.exe` и снижает риск ошибок импорта `greenlet`.
+
+## 2026-03-28-web.59
+- Исправлен запуск на Windows при ошибке `HAR файл не найден`:
+  - в `webui_server.py` добавлен авто-поиск HAR перед стартом задачи,
+  - проверяются папки: текущая, папка приложения, `Desktop`, `Downloads`, домашняя.
+- Если HAR найден, backend автоматически передает `--har <path>` в worker и пишет это в лог (`HAR auto-detected`).
+- Цель: убрать зависимость от hardcoded macOS-путей `/Users/...` в Windows-сборке.

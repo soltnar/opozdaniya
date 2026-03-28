@@ -63,6 +63,37 @@ def update_job(job_id: str, **kwargs) -> None:
 
 
 def run_export_job(job_id: str, date_value: str) -> None:
+    def detect_har_path() -> Path | None:
+        names = [
+            "rest.saby.ru_dost.har",
+            "rest.saby.ru history.har",
+            "rest.saby.ru_history.har",
+        ]
+        roots = [
+            ROOT,
+            Path.cwd(),
+            Path.home(),
+            Path.home() / "Desktop",
+            Path.home() / "Downloads",
+        ]
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                root = root.resolve()
+            except Exception:
+                continue
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            for name in names:
+                p = (root / name)
+                if p.exists() and p.is_file():
+                    return p.resolve()
+        return None
+
+    har_path = detect_har_path()
+
     if getattr(sys, "frozen", False):
         base_cmd = [
             str(Path(sys.executable).resolve()),
@@ -86,6 +117,9 @@ def run_export_job(job_id: str, date_value: str) -> None:
                 "--date",
                 date_value,
             ]
+    if har_path is not None:
+        base_cmd.extend(["--har", str(har_path)])
+        append_log(job_id, f"[server] HAR auto-detected: {har_path}")
     output_path = None
 
     def run_once(cmd: list[str]) -> int:

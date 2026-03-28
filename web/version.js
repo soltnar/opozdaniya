@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.58",
+  version: "2026.03.28-web.59",
   updatedAt: "2026-03-28",
-  notes: "Итоги по ресторанам в веб/PDF/Excel + единый exe worker-mode для надежного запуска на Windows"
+  notes: "Windows HAR auto-detect (Desktop/Downloads/current folder) + fallback from macOS paths fixed"
 };
