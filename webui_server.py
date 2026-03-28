@@ -63,21 +63,29 @@ def update_job(job_id: str, **kwargs) -> None:
 
 
 def run_export_job(job_id: str, date_value: str) -> None:
-    worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
-    if worker_exe.exists():
+    if getattr(sys, "frozen", False):
         base_cmd = [
-            str(worker_exe),
+            str(Path(sys.executable).resolve()),
+            "--worker",
             "--date",
             date_value,
         ]
     else:
-        base_cmd = [
-            sys.executable,
-            "-u",
-            str(EXPORT_SCRIPT),
-            "--date",
-            date_value,
-        ]
+        worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
+        if worker_exe.exists():
+            base_cmd = [
+                str(worker_exe),
+                "--date",
+                date_value,
+            ]
+        else:
+            base_cmd = [
+                sys.executable,
+                "-u",
+                str(EXPORT_SCRIPT),
+                "--date",
+                date_value,
+            ]
     output_path = None
 
     def run_once(cmd: list[str]) -> int:
@@ -207,6 +215,25 @@ def stop_job(job_id: str | None = None) -> dict:
     with JOB_LOCK:
         job = JOBS.get(target_id, {})
     return {"job_id": target_id, "status": job.get("status", "stopping")}
+
+
+def run_embedded_worker(date_value: str) -> int:
+    # Worker mode for frozen single-exe build: execute export script inside this process.
+    import export_delivery_statuses  # noqa: PLC0415
+
+    saved_argv = list(sys.argv)
+    sys.argv = ["export_delivery_statuses.py", "--date", date_value]
+    try:
+        try:
+            result = export_delivery_statuses.main()
+        except SystemExit as exc:
+            code = exc.code
+            if isinstance(code, int):
+                return code
+            return 1 if code else 0
+        return int(result) if isinstance(result, int) else 0
+    finally:
+        sys.argv = saved_argv
 
 
 def _safe_float(value):
@@ -427,6 +454,7 @@ def build_analytics_payload(
             "stages": [],
             "bottlenecks": [],
             "hotspots": [],
+            "restaurant_totals": [],
             "problem_orders": [],
             "status_flow": {
                 "orders_with_statuses": 0,
@@ -745,12 +773,37 @@ def build_analytics_payload(
     for row in detailed_orders:
         by_restaurant[str(row.get("restaurant") or "Не указан")].append(row)
     hotspots: list[dict] = []
+    restaurant_totals: list[dict] = []
     for restaurant, items in by_restaurant.items():
-        if len(items) < 3:
-            continue
         totals = [float(x["total_min"]) for x in items if isinstance(x.get("total_min"), (int, float))]
+        processing = [float(x["processing_min"]) for x in items if isinstance(x.get("processing_min"), (int, float))]
+        cooking = [float(x["cooking_min"]) for x in items if isinstance(x.get("cooking_min"), (int, float))]
+        assembly = [float(x["assembly_min"]) for x in items if isinstance(x.get("assembly_min"), (int, float))]
+        last_mile = []
+        for x in items:
+            if x.get("order_type") == "Самовывоз":
+                if isinstance(x.get("pickup_wait_min"), (int, float)):
+                    last_mile.append(float(x["pickup_wait_min"]))
+            elif isinstance(x.get("delivery_min"), (int, float)):
+                last_mile.append(float(x["delivery_min"]))
         deliveries = [float(x["delivery_min"]) for x in items if isinstance(x.get("delivery_min"), (int, float))]
         overdue_count = sum(1 for x in items if x.get("overdue"))
+        restaurant_totals.append(
+            {
+                "restaurant": restaurant,
+                "orders": len(items),
+                "overdue_count": overdue_count,
+                "overdue_share": (overdue_count / len(items) * 100.0) if items else 0.0,
+                "avg_total_min": statistics.mean(totals) if totals else None,
+                "p90_total_min": _percentile(totals, 0.9) if totals else None,
+                "avg_processing_min": statistics.mean(processing) if processing else None,
+                "avg_cooking_min": statistics.mean(cooking) if cooking else None,
+                "avg_assembly_min": statistics.mean(assembly) if assembly else None,
+                "avg_last_mile_min": statistics.mean(last_mile) if last_mile else None,
+            }
+        )
+        if len(items) < 3:
+            continue
         hotspots.append(
             {
                 "restaurant": restaurant,
@@ -762,6 +815,13 @@ def build_analytics_payload(
             }
         )
     hotspots.sort(key=lambda x: (-(x["late_share"] or 0.0), -(x["avg_total"] or 0.0), -x["orders"]))
+    restaurant_totals.sort(
+        key=lambda x: (
+            -(x.get("orders") or 0),
+            -(x.get("overdue_share") or 0.0),
+            str(x.get("restaurant") or ""),
+        )
+    )
 
     problem_orders = overdue_orders
 
@@ -815,6 +875,7 @@ def build_analytics_payload(
         "stages": stages,
         "bottlenecks": bottleneck_rows,
         "hotspots": hotspots[:20],
+        "restaurant_totals": restaurant_totals,
         "problem_orders": problem_orders,
         "status_flow": {
             "orders_with_statuses": len(events_by_sale),
@@ -878,6 +939,7 @@ def _list_restaurants(file_path: Path) -> list[str]:
 def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
     payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
+    restaurant_totals = payload.get("restaurant_totals") or []
     kpi = payload.get("kpi") or {}
     threshold = float((payload.get("thresholds") or {}).get("overdue_total_min", 60.0))
 
@@ -912,6 +974,35 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         )
     )
     story.append(Spacer(1, 8))
+
+    if restaurant_totals:
+        summary_header = ["Ресторан", "Заказы", "Опозд.", "Доля %", "Avg итого", "P90 итого"]
+        summary_rows = [summary_header]
+        for row in restaurant_totals[:25]:
+            summary_rows.append(
+                [
+                    str(row.get("restaurant") or "—"),
+                    str(int(row.get("orders") or 0)),
+                    str(int(row.get("overdue_count") or 0)),
+                    f"{float(row.get('overdue_share') or 0):.1f}",
+                    "—" if row.get("avg_total_min") is None else f"{float(row.get('avg_total_min')):.1f}",
+                    "—" if row.get("p90_total_min") is None else f"{float(row.get('p90_total_min')):.1f}",
+                ]
+            )
+        story.append(Paragraph("Итоги по ресторанам", styles["Heading2"]))
+        rest_table = Table(summary_rows, colWidths=[200, 55, 55, 55, 70, 70], repeatRows=1)
+        rest_style = TableStyle(
+            [
+                ("FONT", (0, 0), (-1, -1), font_name, 8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c7cdd4")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ]
+        )
+        rest_table.setStyle(rest_style)
+        story.append(rest_table)
+        story.append(Spacer(1, 8))
 
     header = [
         "Ресторан",
@@ -980,6 +1071,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
 def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
     payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
+    restaurant_totals = payload.get("restaurant_totals") or []
     kpi = payload.get("kpi") or {}
     threshold = float((payload.get("thresholds") or {}).get("overdue_total_min", 60.0))
 
@@ -1081,6 +1173,37 @@ def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mod
                 ),
                 f"{row.get('bottleneck_stage') or '—'} ({(row.get('bottleneck_min') or 0):.1f})",
                 row.get("delay_reason"),
+            ]
+        )
+
+    ws_rest = wb.create_sheet("Итоги по ресторанам")
+    ws_rest.append(
+        [
+            "Ресторан",
+            "Заказы",
+            "Опозданий",
+            "Доля опозданий, %",
+            "Avg итого, мин",
+            "P90 итого, мин",
+            "Avg обработка, мин",
+            "Avg готовка, мин",
+            "Avg сборка, мин",
+            "Avg доставка/выдача, мин",
+        ]
+    )
+    for row in restaurant_totals:
+        ws_rest.append(
+            [
+                row.get("restaurant"),
+                row.get("orders"),
+                row.get("overdue_count"),
+                row.get("overdue_share"),
+                row.get("avg_total_min"),
+                row.get("p90_total_min"),
+                row.get("avg_processing_min"),
+                row.get("avg_cooking_min"),
+                row.get("avg_assembly_min"),
+                row.get("avg_last_mile_min"),
             ]
         )
 
@@ -1439,11 +1562,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    if "--worker" in sys.argv:
+        try:
+            idx = sys.argv.index("--date")
+            date_value = sys.argv[idx + 1]
+        except Exception:
+            print("worker mode requires --date YYYY-MM-DD")
+            return 2
+        return run_embedded_worker(str(date_value))
+
     worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():
         print(f"web dir not found: {WEB_DIR}")
         return 2
-    if not EXPORT_SCRIPT.exists() and not worker_exe.exists():
+    if not EXPORT_SCRIPT.exists() and not worker_exe.exists() and not getattr(sys, "frozen", False):
         print(f"export script not found: {EXPORT_SCRIPT}")
         print(f"worker exe not found: {worker_exe}")
         return 2

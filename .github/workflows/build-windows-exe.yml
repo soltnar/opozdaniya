@@ -33,22 +33,6 @@ jobs:
           pip install greenlet
           pip install pyinstaller
 
-      - name: Build exporter worker EXE
-        shell: pwsh
-        run: |
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --onedir `
-            --name export_delivery_statuses `
-            --hidden-import greenlet `
-            --hidden-import greenlet._greenlet `
-            --collect-all greenlet `
-            --collect-submodules greenlet `
-            --collect-binaries greenlet `
-            --collect-all playwright `
-            export_delivery_statuses.py
-
       - name: Build web console EXE
         shell: pwsh
         run: |
@@ -57,6 +41,13 @@ jobs:
             --clean `
             --onedir `
             --name saby_export_console `
+            --hidden-import export_delivery_statuses `
+            --hidden-import greenlet `
+            --hidden-import greenlet._greenlet `
+            --collect-all greenlet `
+            --collect-submodules greenlet `
+            --collect-binaries greenlet `
+            --collect-all playwright `
             --add-data "web;web" `
             webui_server.py
 
@@ -65,7 +56,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item dist/saby_export_console/* package/ -Recurse -Force
-          Copy-Item dist/export_delivery_statuses/export_delivery_statuses.exe package/ -Force
           Copy-Item start_windows_console.bat package/ -Force
           Copy-Item README.md package/ -Force
           if (Test-Path versions.md) { Copy-Item versions.md package/ -Force }

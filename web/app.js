@@ -21,6 +21,7 @@ const stageBarsEl = document.getElementById('stage-bars');
 const bottleneckBarsEl = document.getElementById('bottleneck-bars');
 const loadBarsEl = document.getElementById('load-bars');
 const hotspotsTableEl = document.getElementById('hotspots-table');
+const restaurantTotalsTableEl = document.getElementById('restaurant-totals-table');
 const problemTableEl = document.getElementById('problem-table');
 const ordersTableEl = document.getElementById('orders-table');
 
@@ -108,6 +109,7 @@ function resetAnalyticsUi() {
   bottleneckBarsEl.innerHTML = '';
   loadBarsEl.innerHTML = '';
   hotspotsTableEl.innerHTML = '';
+  restaurantTotalsTableEl.innerHTML = '';
   problemTableEl.innerHTML = '';
   ordersTableEl.innerHTML = '';
   currentAnalyticsDate = null;
@@ -213,6 +215,50 @@ function renderHotspots(rows) {
     `;
   }).join('');
   hotspotsTableEl.innerHTML = `${head}${body}</tbody></table>`;
+}
+
+function renderRestaurantTotals(rows) {
+  if (!rows || !rows.length) {
+    restaurantTotalsTableEl.innerHTML = '<div class="hint">Нет данных по итогам ресторанов.</div>';
+    return;
+  }
+  const head = `
+    <table class="analytics-table">
+      <thead>
+        <tr>
+          <th>Ресторан</th>
+          <th>Заказы</th>
+          <th>Опозданий</th>
+          <th>Доля опозданий</th>
+          <th>Avg итого</th>
+          <th>P90 итого</th>
+          <th>Avg обработка</th>
+          <th>Avg готовка</th>
+          <th>Avg сборка</th>
+          <th>Avg доставка/выдача</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  const body = rows.map((r) => {
+    const lateShare = Number(r.overdue_share ?? 0);
+    const lateCls = lateShare >= 25 ? 'bad' : '';
+    return `
+      <tr>
+        <td>${escapeHtml(r.restaurant || '—')}</td>
+        <td>${escapeHtml(fmtNum(r.orders, 0))}</td>
+        <td>${escapeHtml(fmtNum(r.overdue_count, 0))}</td>
+        <td class="${lateCls}">${escapeHtml(fmtNum(lateShare, 1))}%</td>
+        <td>${escapeHtml(fmtMin(r.avg_total_min))}</td>
+        <td>${escapeHtml(fmtMin(r.p90_total_min))}</td>
+        <td>${escapeHtml(fmtMin(r.avg_processing_min))}</td>
+        <td>${escapeHtml(fmtMin(r.avg_cooking_min))}</td>
+        <td>${escapeHtml(fmtMin(r.avg_assembly_min))}</td>
+        <td>${escapeHtml(fmtMin(r.avg_last_mile_min))}</td>
+      </tr>
+    `;
+  }).join('');
+  restaurantTotalsTableEl.innerHTML = `${head}${body}</tbody></table>`;
 }
 
 function renderProblems(rows, thresholds) {
@@ -407,6 +453,7 @@ function renderAnalytics(data) {
   renderLoadByHour(Array.isArray(data.load_by_hour) ? data.load_by_hour : []);
 
   renderHotspots(Array.isArray(data.hotspots) ? data.hotspots : []);
+  renderRestaurantTotals(Array.isArray(data.restaurant_totals) ? data.restaurant_totals : []);
   renderProblems(Array.isArray(data.problem_orders) ? data.problem_orders : [], data.thresholds || {});
   renderOrders(Array.isArray(data.orders) ? data.orders : [], data.thresholds || {});
 }
