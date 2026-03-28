@@ -300,3 +300,11 @@
 - Улучшен UX Windows-запуска:
   - `start_windows_console.bat` теперь автоматически открывает браузер на `http://127.0.0.1:8765`,
   - консоль продолжает работать как сервер, лог пишется в `console.log`.
+
+## 2026-03-28-web.55
+- Исправлена ошибка Windows worker-EXE `ModuleNotFoundError: No module named 'greenlet._greenlet'`.
+- В зависимости добавлен `greenlet` (`requirements.txt`).
+- В CI-сборке PyInstaller для `export_delivery_statuses.exe` добавлены:
+  - `--collect-all greenlet`
+  - `--collect-all playwright`
+  чтобы гарантированно включать бинарные модули и runtime-компоненты Playwright.
