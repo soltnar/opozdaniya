@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.62",
+  version: "2026.03.28-web.63",
   updatedAt: "2026-03-28",
-  notes: "No-manual-HAR fallback: runtime auto mode + built-in history template when HAR is missing/incomplete"
+  notes: "Windows build now ships Playwright Chromium and falls back to system Chrome/Edge if bundled browser is unavailable"
 };

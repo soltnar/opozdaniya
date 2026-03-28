@@ -5,6 +5,7 @@ import argparse
 import base64
 import copy
 import json
+import os
 import re
 import sys
 import time
@@ -1933,6 +1934,50 @@ def is_profile_lock_error(err: Exception) -> bool:
     )
 
 
+def is_playwright_browser_missing_error(err: Exception) -> bool:
+    message = str(err)
+    return (
+        "Executable doesn't exist" in message
+        or "Please run the following command to download new browsers" in message
+        or "playwright install" in message
+    )
+
+
+def find_system_chromium_executable() -> Path | None:
+    candidates: list[Path] = []
+    if os.name == "nt":
+        env_paths = [
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ]
+        for base in env_paths:
+            if not base:
+                continue
+            root = Path(base)
+            candidates.extend(
+                [
+                    root / "Google" / "Chrome" / "Application" / "chrome.exe",
+                    root / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                    root / "Chromium" / "Application" / "chrome.exe",
+                ]
+            )
+    else:
+        candidates.extend(
+            [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+            ]
+        )
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
 def create_fallback_profile_dir(base_profile_dir: Path) -> Path:
     runs_dir = base_profile_dir.parent / ".saby_profile_runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -1953,13 +1998,30 @@ def launch_context_with_profile_fallback(
         "locale": "ru-RU",
     }
 
-    try:
-        context = playwright_obj.chromium.launch_persistent_context(
-            user_data_dir=str(base_profile_dir),
-            **launch_kwargs,
+    def _launch(user_data_dir: Path, executable_path: str | None = None) -> BrowserContext:
+        kwargs = dict(launch_kwargs)
+        if executable_path:
+            kwargs["executable_path"] = executable_path
+        return playwright_obj.chromium.launch_persistent_context(
+            user_data_dir=str(user_data_dir),
+            **kwargs,
         )
+
+    executable_path: str | None = None
+    try:
+        context = _launch(base_profile_dir)
         return context, base_profile_dir
     except Exception as err:  # noqa: BLE001
+        if is_playwright_browser_missing_error(err):
+            system_browser = find_system_chromium_executable()
+            if system_browser is not None:
+                executable_path = str(system_browser)
+                print(
+                    "Встроенный браузер Playwright не найден. "
+                    f"Использую системный Chromium-браузер: {system_browser}"
+                )
+                context = _launch(base_profile_dir, executable_path=executable_path)
+                return context, base_profile_dir
         if not is_profile_lock_error(err):
             raise
 
@@ -1968,10 +2030,7 @@ def launch_context_with_profile_fallback(
             "Основной профиль занят другим процессом Chromium. "
             f"Переключаюсь на временный профиль: {fallback_dir}"
         )
-        context = playwright_obj.chromium.launch_persistent_context(
-            user_data_dir=str(fallback_dir),
-            **launch_kwargs,
-        )
+        context = _launch(fallback_dir, executable_path=executable_path)
         return context, fallback_dir
 
 
