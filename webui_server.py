@@ -62,7 +62,7 @@ def update_job(job_id: str, **kwargs) -> None:
         job.update(kwargs)
 
 
-def run_export_job(job_id: str, date_value: str) -> None:
+def run_export_job(job_id: str, date_value: str, har_override: str | None = None) -> None:
     def detect_har_path() -> Path | None:
         names = [
             "rest.saby.ru_dost.har",
@@ -90,9 +90,32 @@ def run_export_job(job_id: str, date_value: str) -> None:
                 p = (root / name)
                 if p.exists() and p.is_file():
                     return p.resolve()
+            # fallback: any *.har with best-effort scoring
+            try:
+                candidates = list(root.glob("*.har"))
+            except Exception:
+                candidates = []
+            if candidates:
+                def score(path: Path) -> tuple[int, int, str]:
+                    n = path.name.lower()
+                    return (
+                        1 if "dost" in n or "delivery" in n else 0,
+                        1 if "rest.saby.ru" in n else 0,
+                        n,
+                    )
+                candidates.sort(key=score, reverse=True)
+                return candidates[0].resolve()
         return None
 
-    har_path = detect_har_path()
+    har_path: Path | None = None
+    if har_override:
+        p = Path(str(har_override)).expanduser()
+        if p.exists() and p.is_file():
+            har_path = p.resolve()
+        else:
+            append_log(job_id, f"[server] HAR override not found: {har_override}")
+    if har_path is None:
+        har_path = detect_har_path()
 
     if getattr(sys, "frozen", False):
         base_cmd = [
@@ -194,7 +217,7 @@ def run_export_job(job_id: str, date_value: str) -> None:
         append_log(job_id, traceback.format_exc())
 
 
-def create_job(date_value: str) -> dict:
+def create_job(date_value: str, har_path: str | None = None) -> dict:
     global LATEST_JOB_ID
 
     with JOB_LOCK:
@@ -206,6 +229,7 @@ def create_job(date_value: str) -> dict:
         JOBS[job_id] = {
             "id": job_id,
             "date": date_value,
+            "har_path": har_path,
             "status": "running",
             "started_at": now_iso(),
             "ended_at": None,
@@ -217,7 +241,7 @@ def create_job(date_value: str) -> dict:
         }
         LATEST_JOB_ID = job_id
 
-    thread = threading.Thread(target=run_export_job, args=(job_id, date_value), daemon=True)
+    thread = threading.Thread(target=run_export_job, args=(job_id, date_value, har_path), daemon=True)
     thread.start()
 
     return JOBS[job_id]
@@ -1580,6 +1604,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         date_value = str(payload.get("date", "")).strip()
+        har_value = payload.get("har_path")
+        har_path = None
+        if har_value is not None:
+            har_path = str(har_value).strip() or None
         try:
             datetime.strptime(date_value, "%Y-%m-%d")
         except ValueError:
@@ -1587,7 +1615,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            job = create_job(date_value)
+            job = create_job(date_value, har_path=har_path)
         except RuntimeError as err:
             self.send_json({"error": str(err)}, status=409)
             return

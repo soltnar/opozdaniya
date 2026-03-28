@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.28-web.59",
+  version: "2026.03.28-web.60",
   updatedAt: "2026-03-28",
-  notes: "Windows HAR auto-detect (Desktop/Downloads/current folder) + fallback from macOS paths fixed"
+  notes: "HAR override field in UI + improved Windows auto-detect for any *.har (including names with suffixes)"
 };
