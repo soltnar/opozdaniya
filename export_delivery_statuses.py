@@ -1397,6 +1397,75 @@ def parse_status_change(message: str | None) -> tuple[str, str] | None:
     return match.group("from"), match.group("to")
 
 
+def is_history_method_not_found_error(message: str) -> bool:
+    msg = (message or "").lower()
+    return (
+        "history_of_instance" in msg
+        and (
+            "не найден" in msg
+            or "not found" in msg
+            or "недоступен" in msg
+            or "rpc http error 404" in msg
+        )
+    )
+
+
+def history_method_variants(
+    template: TemplateBundle,
+    payload: dict[str, Any],
+) -> list[tuple[str, str]]:
+    current_called = str(template.history_called_method or "Istoriya.History_Of_Instance")
+    current_body = str(payload.get("method") or "История.History_Of_Instance")
+    variants: list[tuple[str, str]] = [
+        (current_called, current_body),
+        ("Istoriya.History_Of_Instance", "Istoriya.History_Of_Instance"),
+        ("Istoriya.History_Of_Instance", "История.History_Of_Instance"),
+        ("История.History_Of_Instance", "История.History_Of_Instance"),
+        ("History.History_Of_Instance", "History.History_Of_Instance"),
+    ]
+    unique: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in variants:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
+def call_history_with_auto_method(
+    client: SabyRpcClient,
+    template: TemplateBundle,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    last_err: Exception | None = None
+    variants = history_method_variants(template, payload)
+    for called_method, body_method in variants:
+        trial_payload = copy.deepcopy(payload)
+        trial_payload["method"] = body_method
+        try:
+            result = client.call(trial_payload, called_method)
+            if called_method != template.history_called_method or body_method != str(
+                template.history_payload_template.get("method")
+            ):
+                print(
+                    "Автоподбор history-метода: "
+                    f"header={called_method}, body={body_method}"
+                )
+            template.history_called_method = called_method
+            template.history_payload_template["method"] = body_method
+            return result
+        except Exception as err:  # noqa: BLE001
+            last_err = err
+            if not is_history_method_not_found_error(str(err)):
+                raise
+            continue
+
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Не удалось выполнить history-запрос: нет рабочих вариантов метода.")
+
+
 def fetch_order_status_history(
     client: SabyRpcClient,
     template: TemplateBundle,
@@ -1424,7 +1493,13 @@ def fetch_order_status_history(
             limit=history_page_limit,
             position=position,
         )
-        result = client.call(payload, template.history_called_method)
+        try:
+            result = call_history_with_auto_method(client, template, payload)
+        except Exception as err:  # noqa: BLE001
+            print(
+                f"Предупреждение: не удалось загрузить history для заказа {sale_id} ({order.get('Number')}): {err}"
+            )
+            return statuses
         events = recordset_to_dicts(result)
 
         if not events:
