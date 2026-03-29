@@ -63,7 +63,7 @@ def update_job(job_id: str, **kwargs) -> None:
 
 
 def run_export_job(job_id: str, date_value: str, har_override: str | None = None) -> None:
-    def detect_har_path() -> Path | None:
+    def detect_har_path(extra_roots: list[Path] | None = None) -> Path | None:
         names = [
             "rest.saby.ru_dost.har",
             "rest.saby.ru history.har",
@@ -76,6 +76,34 @@ def run_export_job(job_id: str, date_value: str, har_override: str | None = None
             Path.home() / "Desktop",
             Path.home() / "Downloads",
         ]
+        if extra_roots:
+            roots = list(extra_roots) + roots
+
+        def scan_flags(path: Path) -> tuple[bool, bool]:
+            # Lightweight token scan without full JSON parsing.
+            has_list = False
+            has_history = False
+            tokens = [b"SaleOrder.List", b"Istoriya.History_Of_Instance"]
+            try:
+                with path.open("rb") as fh:
+                    tail = b""
+                    while True:
+                        chunk = fh.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        data = tail + chunk
+                        if not has_list and tokens[0] in data:
+                            has_list = True
+                        if not has_history and tokens[1] in data:
+                            has_history = True
+                        if has_list and has_history:
+                            break
+                        tail = data[-128:]
+            except Exception:
+                return False, False
+            return has_list, has_history
+
+        all_candidates: list[Path] = []
         seen: set[str] = set()
         for root in roots:
             try:
@@ -89,29 +117,49 @@ def run_export_job(job_id: str, date_value: str, har_override: str | None = None
             for name in names:
                 p = (root / name)
                 if p.exists() and p.is_file():
-                    return p.resolve()
+                    all_candidates.append(p.resolve())
             # fallback: any *.har with best-effort scoring
             try:
                 candidates = list(root.glob("*.har"))
             except Exception:
                 candidates = []
-            if candidates:
-                def score(path: Path) -> tuple[int, int, str]:
-                    n = path.name.lower()
-                    return (
-                        1 if "dost" in n or "delivery" in n else 0,
-                        1 if "rest.saby.ru" in n else 0,
-                        n,
-                    )
-                candidates.sort(key=score, reverse=True)
-                return candidates[0].resolve()
-        return None
+            for p in candidates:
+                try:
+                    all_candidates.append(p.resolve())
+                except Exception:
+                    continue
+        if not all_candidates:
+            return None
+
+        unique: dict[str, Path] = {}
+        for p in all_candidates:
+            unique[str(p)] = p
+        all_candidates = list(unique.values())
+
+        def score(path: Path) -> tuple[int, int, int, int, float, str]:
+            n = path.name.lower()
+            has_list, has_history = scan_flags(path)
+            return (
+                1 if has_list else 0,
+                1 if has_history else 0,
+                1 if "rest.saby.ru" in n else 0,
+                1 if ("dost" in n or "delivery" in n) else 0,
+                path.stat().st_mtime if path.exists() else 0.0,
+                n,
+            )
+
+        all_candidates.sort(key=score, reverse=True)
+        return all_candidates[0]
 
     har_path: Path | None = None
     if har_override:
         p = Path(str(har_override)).expanduser()
         if p.exists() and p.is_file():
             har_path = p.resolve()
+        elif p.exists() and p.is_dir():
+            har_path = detect_har_path(extra_roots=[p])
+            if har_path is not None:
+                append_log(job_id, f"[server] HAR override dir scan: {p}")
         else:
             append_log(job_id, f"[server] HAR override not found: {har_override}")
     if har_path is None:
