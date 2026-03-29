@@ -243,19 +243,65 @@ def make_default_history_payload_template() -> dict[str, Any]:
     }
 
 
+def make_default_sale_payload_template() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "protocol": 7,
+        "id": 1,
+        "method": "SaleOrder.List",
+        "params": {
+            "Фильтр": {
+                "d": [
+                    "2000-01-01 00:00:00",
+                    "2000-01-01 23:59:59",
+                    "Done",
+                    2,
+                ],
+                "s": [
+                    {"t": "Строка", "n": "DateTimeStartWTZ"},
+                    {"t": "Строка", "n": "DateTimeEndWTZ"},
+                    {"t": "Строка", "n": "ProductStateId"},
+                    {"t": "Число целое", "n": "Reglament"},
+                ],
+                "_type": "record",
+                "f": 0,
+            },
+            "Навигация": {
+                "d": ["bothways", True, 25, None],
+                "s": [
+                    {"t": "Строка", "n": "Direction"},
+                    {"t": "Логическое", "n": "HasMore"},
+                    {"t": "Число целое", "n": "Limit"},
+                    {"t": "Запись", "n": "Position"},
+                ],
+                "_type": "record",
+                "f": 0,
+            },
+            "Сортировка": {
+                "d": [[False, "NextDateWTZText", True]],
+                "s": [
+                    {"t": "Логическое", "n": "l"},
+                    {"t": "Строка", "n": "n"},
+                    {"t": "Логическое", "n": "o"},
+                ],
+                "_type": "recordset",
+                "f": 0,
+            },
+        },
+    }
+
+
 def make_runtime_fallback_templates(
     runtime_sale_payload: dict[str, Any] | None,
     runtime_sale_called_method: str | None,
 ) -> TemplateBundle:
-    if not isinstance(runtime_sale_payload, dict) or not isinstance(runtime_sale_payload.get("params"), dict):
-        raise RuntimeError(
-            "Не удалось получить runtime-шаблон SaleOrder.List. "
-            "Откройте страницу доставки, выберите дату и вкладку 'Выполнен', затем повторите запуск."
-        )
-
-    sale_payload = copy.deepcopy(runtime_sale_payload)
-    sale_payload.setdefault("method", "SaleOrder.List")
+    sale_payload: dict[str, Any]
     sale_called_method = runtime_sale_called_method or "SaleOrder.List"
+    if isinstance(runtime_sale_payload, dict) and isinstance(runtime_sale_payload.get("params"), dict):
+        sale_payload = copy.deepcopy(runtime_sale_payload)
+        sale_payload.setdefault("method", "SaleOrder.List")
+    else:
+        sale_payload = make_default_sale_payload_template()
 
     history_payload = make_default_history_payload_template()
 
@@ -2099,6 +2145,11 @@ def main() -> int:
                 print(
                     "HAR недоступен/неподходящий. Перехожу в полностью автоматический runtime-режим."
                 )
+                if runtime_sale_payload is None:
+                    print(
+                        "Runtime-шаблон SaleOrder.List не пойман. "
+                        "Использую встроенный универсальный шаблон SaleOrder.List."
+                    )
 
             service_url = merge_service_url(templates.service_url, runtime_service_url)
             base_headers = merge_headers(templates.base_headers, runtime_headers)
