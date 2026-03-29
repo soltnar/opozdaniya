@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.29-web.66",
+  version: "2026.03.29-web.67",
   updatedAt: "2026-03-28",
-  notes: "History API auto-method negotiation + non-fatal per-order history fallback"
+  notes: "Auto-recapture runtime on SaleOrder.List method errors + auto-enable heuristic fallback when Done-runtime is missing"
 };

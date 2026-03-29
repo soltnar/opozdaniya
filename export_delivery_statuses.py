@@ -764,6 +764,20 @@ def wait_until_service_ready(
                 f"Пример ошибки: {format_errors[0]}"
             )
 
+        method_errors = [
+            msg
+            for msg in errors
+            if (
+                "SaleOrder.List" in msg
+                and ("не найден" in msg or "not found" in msg or "недоступен" in msg)
+            )
+        ]
+        if method_errors:
+            raise RuntimeError(
+                "Сервер отклонил метод SaleOrder.List (ошибка метода/сигнатуры). "
+                f"Пример ошибки: {method_errors[0]}"
+            )
+
         print()
         print("Похоже, сессия не авторизована или пароль еще не введен.")
         print("Последние ошибки API:")
@@ -892,6 +906,51 @@ def capture_runtime_service_meta(
         runtime_sale_called_method,
         runtime_sale_is_done,
     )
+
+
+def apply_runtime_sale_meta(
+    templates: TemplateBundle,
+    runtime_sale_payload: dict[str, Any] | None,
+    runtime_sale_called_method: str | None,
+    runtime_sale_is_done: bool,
+    har_delivery_context: bool,
+) -> None:
+    if runtime_sale_payload and runtime_sale_called_method:
+        runtime_method = runtime_sale_payload.get("method")
+        if isinstance(runtime_method, str) and runtime_method:
+            templates.sale_payload_template["method"] = runtime_method
+        templates.sale_called_method = runtime_sale_called_method
+        print(
+            "Используются runtime-параметры SaleOrder.List: "
+            f"method={templates.sale_payload_template.get('method')} "
+            f"header={runtime_sale_called_method}"
+        )
+        if runtime_sale_is_done:
+            merged_fields = merge_runtime_filter_context(
+                templates.sale_payload_template,
+                runtime_sale_payload,
+            )
+            print("Runtime-контекст: найден запрос ProductStateId=Done.")
+            print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
+        elif har_delivery_context:
+            print(
+                "Runtime-контекст: запрос ProductStateId=Done не найден, "
+                "оставляю delivery-контекст из HAR (без переноса ближайших runtime-фильтров)."
+            )
+        else:
+            merged_fields = merge_runtime_filter_context(
+                templates.sale_payload_template,
+                runtime_sale_payload,
+            )
+            print(
+                "Runtime-контекст: запрос ProductStateId=Done не найден, "
+                "взял контекст фильтров из ближайшего SaleOrder.List."
+            )
+            print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
+    else:
+        print(
+            "Runtime-запрос SaleOrder.List не найден. Использую фильтр из HAR."
+        )
 
 
 def merge_service_url(template_url: str, runtime_url: str | None) -> str:
@@ -2229,43 +2288,13 @@ def main() -> int:
             service_url = merge_service_url(templates.service_url, runtime_service_url)
             base_headers = merge_headers(templates.base_headers, runtime_headers)
             har_delivery_context = bool(templates.har_sale_delivery_context)
-
-            if runtime_sale_payload and runtime_sale_called_method:
-                runtime_method = runtime_sale_payload.get("method")
-                if isinstance(runtime_method, str) and runtime_method:
-                    templates.sale_payload_template["method"] = runtime_method
-                templates.sale_called_method = runtime_sale_called_method
-                print(
-                    "Используются runtime-параметры SaleOrder.List: "
-                    f"method={templates.sale_payload_template.get('method')} "
-                    f"header={runtime_sale_called_method}"
-                )
-                if runtime_sale_is_done:
-                    merged_fields = merge_runtime_filter_context(
-                        templates.sale_payload_template,
-                        runtime_sale_payload,
-                    )
-                    print("Runtime-контекст: найден запрос ProductStateId=Done.")
-                    print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
-                elif har_delivery_context:
-                    print(
-                        "Runtime-контекст: запрос ProductStateId=Done не найден, "
-                        "оставляю delivery-контекст из HAR (без переноса ближайших runtime-фильтров)."
-                    )
-                else:
-                    merged_fields = merge_runtime_filter_context(
-                        templates.sale_payload_template,
-                        runtime_sale_payload,
-                    )
-                    print(
-                        "Runtime-контекст: запрос ProductStateId=Done не найден, "
-                        "взял контекст фильтров из ближайшего SaleOrder.List."
-                    )
-                    print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
-            else:
-                print(
-                    "Runtime-запрос SaleOrder.List не найден. Использую фильтр из HAR."
-                )
+            apply_runtime_sale_meta(
+                templates=templates,
+                runtime_sale_payload=runtime_sale_payload,
+                runtime_sale_called_method=runtime_sale_called_method,
+                runtime_sale_is_done=runtime_sale_is_done,
+                har_delivery_context=har_delivery_context,
+            )
 
             parsed_url = urlparse(service_url)
             x_version = parse_qs(parsed_url.query).get("x_version", [None])[0]
@@ -2274,12 +2303,43 @@ def main() -> int:
 
             primary_client = SabyRpcClient(context, service_url, base_headers)
             fallback_client = SabyRpcClient(context, templates.service_url, templates.base_headers)
-            client = wait_until_service_ready(
-                clients=[primary_client, fallback_client],
-                template=templates,
-                target_date=target_date,
-                page=page,
-            )
+            try:
+                client = wait_until_service_ready(
+                    clients=[primary_client, fallback_client],
+                    template=templates,
+                    target_date=target_date,
+                    page=page,
+                )
+            except RuntimeError as err:
+                if "SaleOrder.List" not in str(err):
+                    raise
+                print(
+                    "Автовосстановление: переполучаю runtime-параметры SaleOrder.List после ошибки метода..."
+                )
+                (
+                    runtime_service_url,
+                    runtime_headers,
+                    runtime_sale_payload,
+                    runtime_sale_called_method,
+                    runtime_sale_is_done,
+                ) = capture_runtime_service_meta(page, timeout_seconds=35)
+                apply_runtime_sale_meta(
+                    templates=templates,
+                    runtime_sale_payload=runtime_sale_payload,
+                    runtime_sale_called_method=runtime_sale_called_method,
+                    runtime_sale_is_done=runtime_sale_is_done,
+                    har_delivery_context=har_delivery_context,
+                )
+                service_url = merge_service_url(templates.service_url, runtime_service_url)
+                base_headers = merge_headers(templates.base_headers, runtime_headers)
+                primary_client = SabyRpcClient(context, service_url, base_headers)
+                fallback_client = SabyRpcClient(context, templates.service_url, templates.base_headers)
+                client = wait_until_service_ready(
+                    clients=[primary_client, fallback_client],
+                    template=templates,
+                    target_date=target_date,
+                    page=page,
+                )
 
             ui_done_count: int | None = None
             if args.align_to_ui_count:
@@ -2298,6 +2358,11 @@ def main() -> int:
 
             orders: list[dict[str, Any]] = []
             heuristic_fallback_enabled = bool(args.allow_heuristic_fallback)
+            if not runtime_sale_is_done and not heuristic_fallback_enabled:
+                heuristic_fallback_enabled = True
+                print(
+                    "Runtime Done-запрос не пойман. Автоматически включаю эвристический fallback."
+                )
             if not runtime_sale_is_done and har_delivery_context and not heuristic_fallback_enabled:
                 print(
                     "Runtime Done-запрос не пойман, но HAR содержит delivery-контекст SaleOrder.List. "
