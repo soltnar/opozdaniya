@@ -61,7 +61,13 @@ jobs:
         run: |
           $exe = "dist/saby_export_console/saby_export_console.exe"
           if (!(Test-Path $exe)) { throw "EXE not found: $exe" }
-          & $exe --help | Out-Host
+          $proc = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            if ($proc.ExitCode -ne 0) { throw "EXE exited with code $($proc.ExitCode) right after start" }
+          } else {
+            Stop-Process -Id $proc.Id -Force
+          }
           $chromeGlob = Get-ChildItem "dist/saby_export_console/_internal/playwright/driver/package/.local-browsers" -Recurse -Filter "chrome.exe" -ErrorAction SilentlyContinue
           if (!$chromeGlob) { throw "Bundled Playwright Chromium not found in package" }
           Write-Host "Bundled Chromium found:" $chromeGlob[0].FullName
