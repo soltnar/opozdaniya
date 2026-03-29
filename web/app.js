@@ -3,7 +3,6 @@ const runBtn = document.getElementById('run-btn');
 const stopBtn = document.getElementById('stop-btn');
 const downloadBtn = document.getElementById('download-btn');
 const downloadPdfBtn = document.getElementById('download-pdf-btn');
-const harPathInput = document.getElementById('har-path');
 const clearBtn = document.getElementById('clear-btn');
 const copyBtn = document.getElementById('copy-btn');
 const toggleLogBtn = document.getElementById('toggle-log-btn');
@@ -33,7 +32,6 @@ let currentAnalyticsDate = null;
 const SELECTED_DATE_KEY = 'saby_selected_date';
 const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurant';
 const SELECTED_SORT_KEY = 'saby_selected_sort';
-const SELECTED_HAR_PATH_KEY = 'saby_har_path';
 
 function todayIso() {
   const now = new Date();
@@ -585,17 +583,10 @@ async function runExport() {
 
   try {
     localStorage.setItem(SELECTED_DATE_KEY, date);
-    const harPath = String(harPathInput?.value || '').trim();
-    if (harPath) {
-      localStorage.setItem(SELECTED_HAR_PATH_KEY, harPath);
-    } else {
-      localStorage.removeItem(SELECTED_HAR_PATH_KEY);
-    }
     const payload = await api('/api/run', {
       method: 'POST',
       body: JSON.stringify({
         date,
-        har_path: harPath || null,
       }),
     });
 
@@ -772,7 +763,6 @@ toggleLogBtn.addEventListener('click', () => {
 
 dateInput.value = localStorage.getItem(SELECTED_DATE_KEY) || todayIso();
 sortFilterEl.value = localStorage.getItem(SELECTED_SORT_KEY) || 'restaurant_asc';
-harPathInput.value = localStorage.getItem(SELECTED_HAR_PATH_KEY) || '';
 loadRestaurantsForDate(dateInput.value);
 if (window.APP_META) {
   versionEl.textContent = `version ${window.APP_META.version} · updated ${window.APP_META.updatedAt}`;

@@ -778,6 +778,17 @@ def wait_until_service_ready(
                 f"Пример ошибки: {method_errors[0]}"
             )
 
+        cursor_errors = [
+            msg
+            for msg in errors
+            if "Для текущего реестра разрешена курсорная навигация только по полям" in msg
+        ]
+        if cursor_errors:
+            raise RuntimeError(
+                "Сервер отклонил метод реестра заказов (ошибка метода/сигнатуры). "
+                f"Пример ошибки: {cursor_errors[0]}"
+            )
+
         print()
         print("Похоже, сессия не авторизована или пароль еще не введен.")
         print("Последние ошибки API:")
@@ -827,6 +838,37 @@ def capture_runtime_service_meta(
             }
         )
 
+    def _is_list_like(called_method: str, payload: dict[str, Any] | None) -> bool:
+        called = (called_method or "").lower()
+        if not called.startswith("saleorder."):
+            return False
+        if called.startswith("saleorder.list") or ".list" in called:
+            return True
+        if not isinstance(payload, dict):
+            return False
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            return False
+        filter_record = params.get("Фильтр")
+        if not isinstance(filter_record, dict):
+            return False
+        names = set(record_field_names(filter_record))
+        # Для списка заказов ожидаем хотя бы часть датного фильтра.
+        if {"DateTimeStartWTZ", "DateTimeEndWTZ"} & names:
+            return True
+        return False
+
+    def _capture_is_list_like(c: dict[str, Any]) -> bool:
+        called = str(c.get("called_method", ""))
+        post_data = c.get("post_data")
+        if not isinstance(post_data, str) or not post_data:
+            return False
+        try:
+            payload = json.loads(post_data)
+        except json.JSONDecodeError:
+            return False
+        return _is_list_like(called, payload if isinstance(payload, dict) else None)
+
     browser_context.on("request", handle_request)
     try:
         for _ in range(3):
@@ -856,7 +898,7 @@ def capture_runtime_service_meta(
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             if any(
-                c.get("called_method", "").startswith("SaleOrder.")
+                _capture_is_list_like(c)
                 and "/page/delivery" in c.get("referer", "")
                 for c in captures
             ):
@@ -892,7 +934,7 @@ def capture_runtime_service_meta(
             -len(c.get("url", "")),
         ),
     )
-    selected = captures_sorted[0]
+    selected = next((c for c in captures_sorted if _capture_is_list_like(c)), captures_sorted[0])
 
     runtime_headers: dict[str, str] = {}
     headers = selected.get("headers", {})
@@ -916,6 +958,8 @@ def capture_runtime_service_meta(
         except json.JSONDecodeError:
             continue
         if not (isinstance(parsed_payload, dict) and isinstance(parsed_payload.get("params"), dict)):
+            continue
+        if not _is_list_like(called, parsed_payload):
             continue
         if runtime_sale_payload is None:
             runtime_sale_payload = parsed_payload
@@ -2341,10 +2385,15 @@ def main() -> int:
                     page=page,
                 )
             except RuntimeError as err:
-                if "SaleOrder.List" not in str(err):
+                msg = str(err)
+                if not (
+                    "SaleOrder." in msg
+                    or "метода/сигнатуры" in msg
+                    or "курсорная навигация" in msg
+                ):
                     raise
                 print(
-                    "Автовосстановление: переполучаю runtime-параметры SaleOrder.List после ошибки метода..."
+                    "Автовосстановление: переполучаю runtime-параметры реестра после ошибки метода..."
                 )
                 (
                     runtime_service_url,

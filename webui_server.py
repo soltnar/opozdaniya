@@ -62,109 +62,7 @@ def update_job(job_id: str, **kwargs) -> None:
         job.update(kwargs)
 
 
-def run_export_job(job_id: str, date_value: str, har_override: str | None = None) -> None:
-    def detect_har_path(extra_roots: list[Path] | None = None) -> Path | None:
-        names = [
-            "rest.saby.ru_dost.har",
-            "rest.saby.ru history.har",
-            "rest.saby.ru_history.har",
-        ]
-        roots = [
-            ROOT,
-            Path.cwd(),
-            Path.home(),
-            Path.home() / "Desktop",
-            Path.home() / "Downloads",
-        ]
-        if extra_roots:
-            roots = list(extra_roots) + roots
-
-        def scan_flags(path: Path) -> tuple[bool, bool]:
-            # Lightweight token scan without full JSON parsing.
-            has_list = False
-            has_history = False
-            tokens = [b"SaleOrder.List", b"Istoriya.History_Of_Instance"]
-            try:
-                with path.open("rb") as fh:
-                    tail = b""
-                    while True:
-                        chunk = fh.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        data = tail + chunk
-                        if not has_list and tokens[0] in data:
-                            has_list = True
-                        if not has_history and tokens[1] in data:
-                            has_history = True
-                        if has_list and has_history:
-                            break
-                        tail = data[-128:]
-            except Exception:
-                return False, False
-            return has_list, has_history
-
-        all_candidates: list[Path] = []
-        seen: set[str] = set()
-        for root in roots:
-            try:
-                root = root.resolve()
-            except Exception:
-                continue
-            key = str(root)
-            if key in seen:
-                continue
-            seen.add(key)
-            for name in names:
-                p = (root / name)
-                if p.exists() and p.is_file():
-                    all_candidates.append(p.resolve())
-            # fallback: any *.har with best-effort scoring
-            try:
-                candidates = list(root.glob("*.har"))
-            except Exception:
-                candidates = []
-            for p in candidates:
-                try:
-                    all_candidates.append(p.resolve())
-                except Exception:
-                    continue
-        if not all_candidates:
-            return None
-
-        unique: dict[str, Path] = {}
-        for p in all_candidates:
-            unique[str(p)] = p
-        all_candidates = list(unique.values())
-
-        def score(path: Path) -> tuple[int, int, int, int, float, str]:
-            n = path.name.lower()
-            has_list, has_history = scan_flags(path)
-            return (
-                1 if has_list else 0,
-                1 if has_history else 0,
-                1 if "rest.saby.ru" in n else 0,
-                1 if ("dost" in n or "delivery" in n) else 0,
-                path.stat().st_mtime if path.exists() else 0.0,
-                n,
-            )
-
-        all_candidates.sort(key=score, reverse=True)
-        return all_candidates[0]
-
-    har_path: Path | None = None
-    if har_override:
-        p = Path(str(har_override)).expanduser()
-        if p.exists() and p.is_file():
-            har_path = p.resolve()
-        elif p.exists() and p.is_dir():
-            har_path = detect_har_path(extra_roots=[p])
-            if har_path is not None:
-                append_log(job_id, f"[server] HAR override dir scan: {p}")
-        else:
-            append_log(job_id, f"[server] HAR override not found: {har_override}")
-    if har_path is None:
-        har_path = detect_har_path()
-
+def run_export_job(job_id: str, date_value: str) -> None:
     if getattr(sys, "frozen", False):
         base_cmd = [
             str(Path(sys.executable).resolve()),
@@ -188,9 +86,6 @@ def run_export_job(job_id: str, date_value: str, har_override: str | None = None
                 "--date",
                 date_value,
             ]
-    if har_path is not None:
-        base_cmd.extend(["--har", str(har_path)])
-        append_log(job_id, f"[server] HAR auto-detected: {har_path}")
     output_path = None
 
     def run_once(cmd: list[str]) -> int:
@@ -265,7 +160,7 @@ def run_export_job(job_id: str, date_value: str, har_override: str | None = None
         append_log(job_id, traceback.format_exc())
 
 
-def create_job(date_value: str, har_path: str | None = None) -> dict:
+def create_job(date_value: str) -> dict:
     global LATEST_JOB_ID
 
     with JOB_LOCK:
@@ -277,7 +172,6 @@ def create_job(date_value: str, har_path: str | None = None) -> dict:
         JOBS[job_id] = {
             "id": job_id,
             "date": date_value,
-            "har_path": har_path,
             "status": "running",
             "started_at": now_iso(),
             "ended_at": None,
@@ -289,7 +183,7 @@ def create_job(date_value: str, har_path: str | None = None) -> dict:
         }
         LATEST_JOB_ID = job_id
 
-    thread = threading.Thread(target=run_export_job, args=(job_id, date_value, har_path), daemon=True)
+    thread = threading.Thread(target=run_export_job, args=(job_id, date_value), daemon=True)
     thread.start()
 
     return JOBS[job_id]
@@ -323,14 +217,12 @@ def stop_job(job_id: str | None = None) -> dict:
     return {"job_id": target_id, "status": job.get("status", "stopping")}
 
 
-def run_embedded_worker(date_value: str, har_path: str | None = None) -> int:
+def run_embedded_worker(date_value: str) -> int:
     # Worker mode for frozen single-exe build: execute export script inside this process.
     import export_delivery_statuses  # noqa: PLC0415
 
     saved_argv = list(sys.argv)
     sys.argv = ["export_delivery_statuses.py", "--date", date_value]
-    if har_path:
-        sys.argv.extend(["--har", har_path])
     try:
         try:
             result = export_delivery_statuses.main()
@@ -339,6 +231,9 @@ def run_embedded_worker(date_value: str, har_path: str | None = None) -> int:
             if isinstance(code, int):
                 return code
             return 1 if code else 0
+        except Exception:  # noqa: BLE001
+            print(traceback.format_exc())
+            return 1
         return int(result) if isinstance(result, int) else 0
     finally:
         sys.argv = saved_argv
@@ -1654,10 +1549,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         date_value = str(payload.get("date", "")).strip()
-        har_value = payload.get("har_path")
-        har_path = None
-        if har_value is not None:
-            har_path = str(har_value).strip() or None
         try:
             datetime.strptime(date_value, "%Y-%m-%d")
         except ValueError:
@@ -1665,7 +1556,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            job = create_job(date_value, har_path=har_path)
+            job = create_job(date_value)
         except RuntimeError as err:
             self.send_json({"error": str(err)}, status=409)
             return
@@ -1681,13 +1572,7 @@ def main() -> int:
         except Exception:
             print("worker mode requires --date YYYY-MM-DD")
             return 2
-        har_path = None
-        try:
-            hidx = sys.argv.index("--har")
-            har_path = sys.argv[hidx + 1]
-        except Exception:
-            har_path = None
-        return run_embedded_worker(str(date_value), har_path=har_path)
+        return run_embedded_worker(str(date_value))
 
     worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():
