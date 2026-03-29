@@ -56,6 +56,16 @@ jobs:
             --add-data "web;web" `
             webui_server.py
 
+      - name: Smoke check EXE + bundled Chromium
+        shell: pwsh
+        run: |
+          $exe = "dist/saby_export_console/saby_export_console.exe"
+          if (!(Test-Path $exe)) { throw "EXE not found: $exe" }
+          & $exe --help | Out-Host
+          $chromeGlob = Get-ChildItem "dist/saby_export_console/_internal/playwright/driver/package/.local-browsers" -Recurse -Filter "chrome.exe" -ErrorAction SilentlyContinue
+          if (!$chromeGlob) { throw "Bundled Playwright Chromium not found in package" }
+          Write-Host "Bundled Chromium found:" $chromeGlob[0].FullName
+
       - name: Compose distributive
         shell: pwsh
         run: |
