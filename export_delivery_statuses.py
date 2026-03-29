@@ -805,6 +805,10 @@ def capture_runtime_service_meta(
     captures: list[dict[str, Any]] = []
     browser_context = page.context
 
+    def _is_target_closed_error(err: Exception) -> bool:
+        msg = str(err)
+        return "Target page, context or browser has been closed" in msg
+
     def handle_request(request: Any) -> None:
         if request.method != "POST":
             return
@@ -825,16 +829,30 @@ def capture_runtime_service_meta(
 
     browser_context.on("request", handle_request)
     try:
-        page.goto(DELIVERY_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(700)
-        # Принудительно активируем "Выполнен", чтобы runtime SaleOrder.List
-        # был из нужного delivery-контекста.
-        try:
-            page.get_by_text("Выполнен").first.click(timeout=2500)
-            page.wait_for_timeout(800)
-        except Exception:  # noqa: BLE001
-            pass
-        page.reload(wait_until="domcontentloaded")
+        for _ in range(3):
+            try:
+                if page.is_closed():
+                    page = browser_context.new_page()
+                page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                page.wait_for_timeout(700)
+                # Принудительно активируем "Выполнен", чтобы runtime SaleOrder.List
+                # был из нужного delivery-контекста.
+                try:
+                    page.get_by_text("Выполнен").first.click(timeout=2500)
+                    page.wait_for_timeout(800)
+                except Exception:  # noqa: BLE001
+                    pass
+                page.reload(wait_until="domcontentloaded")
+                break
+            except Exception as err:  # noqa: BLE001
+                if not _is_target_closed_error(err):
+                    raise
+                try:
+                    page = browser_context.new_page()
+                except Exception:  # noqa: BLE001
+                    return None, {}, None, None, False
+        else:
+            return None, {}, None, None, False
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             if any(
@@ -843,12 +861,24 @@ def capture_runtime_service_meta(
                 for c in captures
             ):
                 break
-            page.wait_for_timeout(250)
+            try:
+                if page.is_closed():
+                    page = browser_context.new_page()
+                    page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                page.wait_for_timeout(250)
+            except Exception as err:  # noqa: BLE001
+                if not _is_target_closed_error(err):
+                    raise
+                try:
+                    page = browser_context.new_page()
+                    page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                except Exception:  # noqa: BLE001
+                    break
     finally:
         browser_context.remove_listener("request", handle_request)
 
     if not captures:
-        return None, {}, None, None
+        return None, {}, None, None, False
 
     # Приоритетно берем запросы delivery-модуля, затем любые SaleOrder.*, затем последний.
     captures_sorted = sorted(
