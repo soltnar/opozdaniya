@@ -768,7 +768,7 @@ def wait_until_service_ready(
             msg
             for msg in errors
             if (
-                "SaleOrder.List" in msg
+                "SaleOrder." in msg
                 and ("не найден" in msg or "not found" in msg or "недоступен" in msg)
             )
         ]
@@ -876,7 +876,7 @@ def capture_runtime_service_meta(
 
     for item in captures_sorted:
         called = str(item.get("called_method", ""))
-        if not called.startswith("SaleOrder.List"):
+        if not called.startswith("SaleOrder."):
             continue
         post_data = item.get("post_data")
         if not isinstance(post_data, str) or not post_data:
