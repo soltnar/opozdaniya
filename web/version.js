@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.89",
+  version: "2026.03.30-web.90",
   updatedAt: "2026-03-30",
-  notes: "SaleOrder.List contour fix: full signature now includes ДопПоля (/4), matching Windows HAR runtime"
+  notes: "Status-history parser and PDF fonts hardened: robust History recordset/message parsing + Windows Cyrillic font auto-detection"
 };

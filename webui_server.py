@@ -5,6 +5,7 @@ import json
 import io
 import html
 import math
+import os
 import re
 import statistics
 import subprocess
@@ -945,11 +946,38 @@ def _ensure_pdf_font() -> str:
     global PDF_FONT_NAME
     if PDF_FONT_NAME:
         return PDF_FONT_NAME
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ]
+    candidates: list[str] = []
+    if sys.platform.startswith("win"):
+        win_dir = os.environ.get("WINDIR", r"C:\Windows")
+        font_dir = Path(win_dir) / "Fonts"
+        candidates.extend(
+            [
+                str(font_dir / "arial.ttf"),
+                str(font_dir / "ARIAL.TTF"),
+                str(font_dir / "segoeui.ttf"),
+                str(font_dir / "SEGOEUI.TTF"),
+                str(font_dir / "tahoma.ttf"),
+                str(font_dir / "TAHOMA.TTF"),
+                str(font_dir / "calibri.ttf"),
+                str(font_dir / "CALIBRI.TTF"),
+            ]
+        )
+    elif sys.platform == "darwin":
+        candidates.extend(
+            [
+                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial Unicode.ttf",
+                "/Library/Fonts/Arial.ttf",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            ]
+        )
     for font_path in candidates:
         p = Path(font_path)
         if p.exists():

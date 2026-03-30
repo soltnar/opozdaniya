@@ -51,9 +51,16 @@ DEFAULT_BASE_HEADERS = {
     "x-requested-with": "XMLHttpRequest",
 }
 
-STATUS_CHANGE_PATTERN = re.compile(
-    r'Изменен статус заказа:\s*["«](?P<from>.*?)["»]\s*->\s*["«](?P<to>.*?)["»]'
-)
+STATUS_CHANGE_PATTERNS = [
+    re.compile(
+        r'Измен[её]н\s+статус\s+заказа:\s*["«](?P<from>.*?)["»]\s*(?:->|→)\s*["«](?P<to>.*?)["»]',
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r'статус\s+заказа:\s*["«]?(?P<from>[^"»\n]+?)["»]?\s*(?:->|→)\s*["«]?(?P<to>[^"»\n]+?)["»]?(?:\n|$)',
+        flags=re.IGNORECASE,
+    ),
+]
 
 DEFAULT_HISTORY_ACTIONS = [
     "Изменение статуса заказа",
@@ -1327,8 +1334,21 @@ def ensure_sort_exists(params: dict[str, Any]) -> None:
     }
 
 
+def is_recordset_like(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not isinstance(value.get("d"), list):
+        return False
+    if not isinstance(value.get("s"), list):
+        return False
+    kind = str(value.get("_type") or "").strip().lower()
+    if not kind:
+        return True
+    return kind == "recordset"
+
+
 def recordset_to_dicts(recordset: dict[str, Any]) -> list[dict[str, Any]]:
-    if recordset.get("_type") != "recordset":
+    if not is_recordset_like(recordset):
         return []
 
     field_names = []
@@ -1347,6 +1367,46 @@ def recordset_to_dicts(recordset: dict[str, Any]) -> list[dict[str, Any]]:
             row_map[name] = row[index] if index < len(row) else None
         rows.append(row_map)
     return rows
+
+
+def extract_recordset_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = recordset_to_dicts(result)
+    if direct:
+        return direct
+
+    nested_candidates = (
+        "result",
+        "Result",
+        "Данные",
+        "Data",
+        "History",
+        "История",
+        "Records",
+        "Записи",
+    )
+    for key in nested_candidates:
+        value = result.get(key)
+        if not isinstance(value, dict):
+            continue
+        rows = recordset_to_dicts(value)
+        if rows:
+            return rows
+
+    for value in result.values():
+        if not isinstance(value, dict):
+            continue
+        rows = recordset_to_dicts(value)
+        if rows:
+            return rows
+    return []
+
+
+def pick_event_message(event: dict[str, Any]) -> Any:
+    for key in ("_message", "message", "Message", "_text", "text", "Text"):
+        value = event.get(key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def find_navigation_record(result: dict[str, Any]) -> dict[str, Any] | None:
@@ -1808,13 +1868,19 @@ def refine_orders_to_ui_count(
     return best_subset, best_meta
 
 
-def parse_status_change(message: str | None) -> tuple[str, str] | None:
-    if not message:
+def parse_status_change(message: Any) -> tuple[str, str] | None:
+    if message in (None, ""):
         return None
-    match = STATUS_CHANGE_PATTERN.search(message)
-    if not match:
-        return None
-    return match.group("from"), match.group("to")
+    text = str(message)
+    for pattern in STATUS_CHANGE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        from_status = str(match.group("from") or "").strip().strip('"«»')
+        to_status = str(match.group("to") or "").strip().strip('"«»')
+        if from_status and to_status:
+            return from_status, to_status
+    return None
 
 
 def is_history_method_not_found_error(message: str) -> bool:
@@ -1985,22 +2051,23 @@ def fetch_order_status_history(
                 f"Предупреждение: не удалось загрузить history для заказа {sale_id} ({order.get('Number')}): {err}"
             )
             return statuses
-        events = recordset_to_dicts(result)
+        events = extract_recordset_rows(result)
 
         if not events:
             break
 
         for event in events:
+            message = pick_event_message(event)
             event_key = (
                 event.get("_event_id"),
                 event.get("_time"),
-                event.get("_message"),
+                message,
             )
             if event_key in seen_events:
                 continue
             seen_events.add(event_key)
 
-            parsed = parse_status_change(event.get("_message"))
+            parsed = parse_status_change(message)
             if not parsed:
                 continue
 
@@ -2016,7 +2083,7 @@ def fetch_order_status_history(
                     "StatusFrom": from_status,
                     "StatusTo": to_status,
                     "Action": event.get("_action"),
-                    "Message": event.get("_message"),
+                    "Message": message,
                 }
             )
 
