@@ -956,6 +956,15 @@ def capture_runtime_service_meta(
                     page.wait_for_timeout(800)
                 except Exception:  # noqa: BLE001
                     pass
+                # На некоторых контурах повторный клик по уже выбранному статусу
+                # не генерирует запрос. Дергаем соседний статус и возвращаемся.
+                try:
+                    page.get_by_text("Отменен").first.click(timeout=2000)
+                    page.wait_for_timeout(500)
+                    page.get_by_text("Выполнен").first.click(timeout=2500)
+                    page.wait_for_timeout(900)
+                except Exception:  # noqa: BLE001
+                    pass
                 # На части Win10-окружений reload может закрывать/ронять вкладку Chromium.
                 # Для runtime-capture достаточно первичной навигации + клика по "Выполнен".
                 break
@@ -2511,61 +2520,61 @@ def main() -> int:
 
             primary_client = SabyRpcClient(context, service_url, base_headers)
             fallback_client = SabyRpcClient(context, templates.service_url, templates.base_headers)
-            try:
-                client = wait_until_service_ready(
-                    clients=[primary_client, fallback_client],
-                    template=templates,
-                    target_date=target_date,
-                    page=page,
-                    non_interactive=bool(args.non_interactive),
-                )
-            except RuntimeError as err:
-                msg = str(err)
-                if not (
-                    "SaleOrder." in msg
-                    or "метода/сигнатуры" in msg
-                    or "курсорная навигация" in msg
-                ):
-                    raise
-                print(
-                    "Автовосстановление: переполучаю runtime-параметры реестра после ошибки метода..."
-                )
+            client: SabyRpcClient | None = None
+            recovery_attempts = 0
+            while client is None:
                 try:
-                    (
-                        runtime_service_url,
-                        runtime_headers,
-                        runtime_sale_payload,
-                        runtime_sale_called_method,
-                        runtime_sale_is_done,
-                    ) = capture_runtime_service_meta(page, timeout_seconds=35)
-                except Exception as recapture_err:  # noqa: BLE001
-                    print(
-                        "Предупреждение: повторный runtime-capture не удался "
-                        f"({recapture_err}). Продолжаю с текущим универсальным шаблоном."
+                    client = wait_until_service_ready(
+                        clients=[primary_client, fallback_client],
+                        template=templates,
+                        target_date=target_date,
+                        page=page,
+                        non_interactive=bool(args.non_interactive),
                     )
-                    runtime_service_url = None
-                    runtime_headers = {}
-                    runtime_sale_payload = None
-                    runtime_sale_called_method = None
-                    runtime_sale_is_done = False
-                apply_runtime_sale_meta(
-                    templates=templates,
-                    runtime_sale_payload=runtime_sale_payload,
-                    runtime_sale_called_method=runtime_sale_called_method,
-                    runtime_sale_is_done=runtime_sale_is_done,
-                    har_delivery_context=har_delivery_context,
-                )
-                service_url = merge_service_url(templates.service_url, runtime_service_url)
-                base_headers = merge_headers(templates.base_headers, runtime_headers)
-                primary_client = SabyRpcClient(context, service_url, base_headers)
-                fallback_client = SabyRpcClient(context, templates.service_url, templates.base_headers)
-                client = wait_until_service_ready(
-                    clients=[primary_client, fallback_client],
-                    template=templates,
-                    target_date=target_date,
-                    page=page,
-                    non_interactive=bool(args.non_interactive),
-                )
+                    break
+                except RuntimeError as err:
+                    msg = str(err)
+                    if not (
+                        "SaleOrder." in msg
+                        or "метода/сигнатуры" in msg
+                        or "курсорная навигация" in msg
+                    ):
+                        raise
+                    recovery_attempts += 1
+                    if recovery_attempts > 3:
+                        raise
+                    print(
+                        "Автовосстановление: переполучаю runtime-параметры реестра после ошибки метода..."
+                    )
+                    try:
+                        (
+                            runtime_service_url,
+                            runtime_headers,
+                            runtime_sale_payload,
+                            runtime_sale_called_method,
+                            runtime_sale_is_done,
+                        ) = capture_runtime_service_meta(page, timeout_seconds=45)
+                    except Exception as recapture_err:  # noqa: BLE001
+                        print(
+                            "Предупреждение: повторный runtime-capture не удался "
+                            f"({recapture_err}). Продолжаю с текущим универсальным шаблоном."
+                        )
+                        runtime_service_url = None
+                        runtime_headers = {}
+                        runtime_sale_payload = None
+                        runtime_sale_called_method = None
+                        runtime_sale_is_done = False
+                    apply_runtime_sale_meta(
+                        templates=templates,
+                        runtime_sale_payload=runtime_sale_payload,
+                        runtime_sale_called_method=runtime_sale_called_method,
+                        runtime_sale_is_done=runtime_sale_is_done,
+                        har_delivery_context=har_delivery_context,
+                    )
+                    service_url = merge_service_url(templates.service_url, runtime_service_url)
+                    base_headers = merge_headers(templates.base_headers, runtime_headers)
+                    primary_client = SabyRpcClient(context, service_url, base_headers)
+                    fallback_client = SabyRpcClient(context, templates.service_url, templates.base_headers)
 
             ui_done_count: int | None = None
             if args.align_to_ui_count:

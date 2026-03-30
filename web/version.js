@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.78",
+  version: "2026.03.30-web.79",
   updatedAt: "2026-03-30",
-  notes: "Web worker is now non-interactive; improved method-not-found handling and history URL/method fallback with fail-fast"
+  notes: "Runtime capture now forces status toggle (Canceled->Done) and retries method recovery up to 3 times"
 };
