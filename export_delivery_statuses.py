@@ -80,7 +80,7 @@ class SabyRpcClient:
     def call(self, payload: dict[str, Any], called_method: str) -> dict[str, Any]:
         headers = dict(self._base_headers)
         body_method = payload.get("method", "")
-        headers["x-calledmethod"] = called_method
+        headers["x-calledmethod"] = normalize_called_method_header(called_method, body_method)
         headers["x-originalmethodname"] = base64.b64encode(body_method.encode("utf-8")).decode("ascii")
         last_err: Exception | None = None
         for attempt in range(1, 4):
@@ -125,6 +125,35 @@ class SabyRpcClient:
         if last_err is not None:
             raise last_err
         raise RuntimeError("RPC call failed")
+
+
+def normalize_called_method_header(called_method: str, body_method: str | Any) -> str:
+    called = str(called_method or "").strip()
+    body = str(body_method or "").strip()
+
+    def _is_ascii(s: str) -> bool:
+        try:
+            s.encode("ascii")
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    if called and _is_ascii(called):
+        return called
+
+    # История чаще всего падает из-за кириллицы в x-calledmethod.
+    if "history_of_instance" in body.lower() or "история.history_of_instance" in body.lower():
+        return "Istoriya.History_Of_Instance"
+
+    if body.startswith("SaleOrder.") and _is_ascii(body):
+        return body
+
+    ascii_only = "".join(ch for ch in called if ord(ch) < 128 and ch.isprintable())
+    if ascii_only:
+        return ascii_only
+
+    # Безопасный общий fallback.
+    return "Istoriya.History_Of_Instance"
 
 
 def parse_args() -> argparse.Namespace:
@@ -861,6 +890,8 @@ def capture_runtime_service_meta(
         called = (called_method or "").lower()
         if not called.startswith("saleorder."):
             return False
+        if "counters" in called:
+            return False
         if called.startswith("saleorder.list") or ".list" in called:
             return True
         if not isinstance(payload, dict):
@@ -1593,7 +1624,6 @@ def history_method_variants(
         (current_called, current_body),
         ("Istoriya.History_Of_Instance", "Istoriya.History_Of_Instance"),
         ("Istoriya.History_Of_Instance", "История.History_Of_Instance"),
-        ("История.History_Of_Instance", "История.History_Of_Instance"),
         ("History.History_Of_Instance", "History.History_Of_Instance"),
     ]
     unique: list[tuple[str, str]] = []
@@ -2347,10 +2377,11 @@ def main() -> int:
         except Exception as err:  # noqa: BLE001
             har_error = str(err)
     else:
-        har_error = (
-            "HAR файл не найден. Проверены варианты: "
-            + ", ".join(DEFAULT_HAR_CANDIDATES)
-        )
+        if str(args.har).strip().lower() != "auto":
+            har_error = (
+                "HAR файл не найден. Проверены варианты: "
+                + ", ".join(DEFAULT_HAR_CANDIDATES)
+            )
 
     output_path = get_output_path(target_date, args.output)
 

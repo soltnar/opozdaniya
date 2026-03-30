@@ -361,6 +361,14 @@
   - помимо фиксированных имен теперь ищутся любые `*.har` в папках запуска, Desktop и Downloads,
   - добавлен приоритет delivery-файлов (`dost`/`delivery`) и `rest.saby.ru`.
 
+## 2026-03-30-web.76
+- Исправлен массовый сбой history-запросов `Invalid character in header content ["x-calledmethod"]`:
+  - `x-calledmethod` теперь принудительно нормализуется в ASCII,
+  - исключен вариант с кириллическим header-методом для `History_Of_Instance`.
+- Runtime-capture стал точнее:
+  - методы `SaleOrder.Counters*` исключены из кандидатов list-реестра.
+- В режиме `--har auto` убрано лишнее предупреждение `HAR файл не найден...`.
+
 ## 2026-03-30-web.75
 - Дополнительная стабилизация runtime-режима на Windows:
   - из `capture_runtime_service_meta` убран `page.reload`,
