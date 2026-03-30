@@ -531,3 +531,10 @@
 - Исправлен критический баг Windows single-exe:
   - в `webui_server` исправлено имя аргумента при вызове `run_embedded_worker(...)`,
   - устранена ошибка `TypeError: run_embedded_worker() got an unexpected keyword argument 'profile_override'`.
+
+## 2026-03-30-web.84
+- Усилен автоподбор сигнатуры `SaleOrder.List`:
+  - для режимов `full`/`no_sort`/`filter_only` параметры теперь формируются строго как `/3`, `/2`, `/1`,
+  - убраны лишние runtime-ключи `params`, которые могли ломать сигнатуру и вызывать `SaleOrder.List/3 not found`.
+- Сохранена совместимость контуров:
+  - если runtime дал собственный шаблон `Сортировка`/`Навигация`, он сохраняется и используется в строгой сигнатуре.

@@ -1392,16 +1392,33 @@ def build_sale_payload(
         set_record_field(filter_record, "ReglamentStates", [999])
 
     mode = signature_mode if signature_mode in {"full", "no_sort", "filter_only"} else "full"
+    filter_only_record = filter_record
     if mode == "full":
-        ensure_sort_exists(params)
-        params["Навигация"] = build_navigation(params.get("Навигация"), direction, limit, position)
+        # Строгая /3-сигнатура: оставляем только Фильтр + Навигация + Сортировка.
+        params_keys_snapshot = dict(params)
+        params.clear()
+        params["Фильтр"] = filter_only_record
+        sort_template = params_keys_snapshot.get("Сортировка")
+        if isinstance(sort_template, dict):
+            params["Сортировка"] = copy.deepcopy(sort_template)
+        else:
+            ensure_sort_exists(params)
+        params["Навигация"] = build_navigation(
+            params_keys_snapshot.get("Навигация"),
+            direction,
+            limit,
+            position,
+        )
     elif mode == "no_sort":
-        params.pop("Сортировка", None)
-        params["Навигация"] = build_navigation(params.get("Навигация"), direction, limit, position)
+        # Строгая /2-сигнатура: оставляем только Фильтр + Навигация.
+        nav_template = params.get("Навигация")
+        params.clear()
+        params["Фильтр"] = filter_only_record
+        params["Навигация"] = build_navigation(nav_template, direction, limit, position)
     else:
-        # Минимальная сигнатура: только фильтр.
-        params.pop("Сортировка", None)
-        params.pop("Навигация", None)
+        # Минимальная /1-сигнатура: только Фильтр.
+        params.clear()
+        params["Фильтр"] = filter_only_record
     return payload
 
 
