@@ -1880,6 +1880,14 @@ def parse_status_change(message: Any) -> tuple[str, str] | None:
         to_status = str(match.group("to") or "").strip().strip('"«»')
         if from_status and to_status:
             return from_status, to_status
+    lowered = text.lower()
+    if "статус" in lowered:
+        quoted = re.findall(r'["«]([^"»\n]{1,80})["»]', text)
+        if len(quoted) >= 2:
+            from_status = str(quoted[0]).strip()
+            to_status = str(quoted[1]).strip()
+            if from_status and to_status and from_status != to_status:
+                return from_status, to_status
     return None
 
 

@@ -12,6 +12,13 @@
       <h1>Saby Export Console</h1>
       <p class="subtitle">Запуск выгрузки истории заказов и онлайн-лог выполнения</p>
       <div id="version" class="version"></div>
+      <div class="hero-tools">
+        <a id="download-log-link" class="ghost-link disabled" href="#" target="_blank" rel="noopener">Скачать лог</a>
+        <div id="run-indicator" class="run-indicator hidden" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Идет выполнение...</span>
+        </div>
+      </div>
     </section>
 
     <section class="panel controls">
@@ -42,18 +49,6 @@
         <button id="download-pdf-btn" type="button" class="ghost" disabled>Скачать PDF</button>
       </div>
       <div id="result" class="result"></div>
-    </section>
-
-    <section class="panel logs">
-      <div class="logs-head">
-        <h2>Лог</h2>
-        <div class="logs-actions">
-          <button id="copy-btn" type="button" class="ghost">Копировать</button>
-          <button id="toggle-log-btn" type="button" class="ghost">Скрыть лог</button>
-          <button id="clear-btn" type="button" class="ghost">Очистить</button>
-        </div>
-      </div>
-      <pre id="log-box"></pre>
     </section>
 
     <section id="analytics-panel" class="panel analytics hidden">

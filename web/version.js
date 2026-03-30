@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.90",
+  version: "2026.03.30-web.91",
   updatedAt: "2026-03-30",
-  notes: "Status-history parser and PDF fonts hardened: robust History recordset/message parsing + Windows Cyrillic font auto-detection"
+  notes: "UI cleanup: logs moved to downloadable link + running spinner; backend log download endpoint; stronger status fallback parsing"
 };

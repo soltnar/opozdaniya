@@ -1661,6 +1661,56 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content)
             return
 
+        if path == "/api/log_download":
+            qs = parse_qs(parsed.query)
+            requested_id = (qs.get("job_id", [None])[0] or None)
+            requested_date = (qs.get("date", [None])[0] or None)
+            if requested_id is not None:
+                requested_id = str(requested_id).strip() or None
+            if requested_date is not None:
+                requested_date = str(requested_date).strip() or None
+
+            with JOB_LOCK:
+                target_job = None
+                if requested_id:
+                    target_job = JOBS.get(requested_id)
+                elif requested_date:
+                    date_jobs = [j for j in JOBS.values() if str(j.get("date")) == requested_date]
+                    if date_jobs:
+                        date_jobs.sort(key=lambda x: str(x.get("started_at") or ""), reverse=True)
+                        target_job = date_jobs[0]
+                elif LATEST_JOB_ID:
+                    target_job = JOBS.get(LATEST_JOB_ID)
+
+            if not target_job:
+                self.send_json({"error": "log source not found"}, status=404)
+                return
+
+            log_lines = target_job.get("logs", [])
+            if not isinstance(log_lines, list):
+                log_lines = []
+            header = [
+                f"job_id: {target_job.get('id')}",
+                f"date: {target_job.get('date')}",
+                f"status: {target_job.get('status')}",
+                f"started_at: {target_job.get('started_at')}",
+                f"ended_at: {target_job.get('ended_at')}",
+                "",
+            ]
+            text = "\n".join(header + [str(line) for line in log_lines]) + "\n"
+            body = text.encode("utf-8", errors="replace")
+            date_part = str(target_job.get("date") or "unknown")
+            job_part = str(target_job.get("id") or "latest")[:12]
+            filename = f"saby_export_{date_part}_{job_part}.log"
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/api/restaurants":
             qs = parse_qs(parsed.query)
             requested_date = (qs.get("date", [None])[0] or None)

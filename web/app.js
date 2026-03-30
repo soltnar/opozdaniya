@@ -3,13 +3,11 @@ const runBtn = document.getElementById('run-btn');
 const stopBtn = document.getElementById('stop-btn');
 const downloadBtn = document.getElementById('download-btn');
 const downloadPdfBtn = document.getElementById('download-pdf-btn');
-const clearBtn = document.getElementById('clear-btn');
-const copyBtn = document.getElementById('copy-btn');
-const toggleLogBtn = document.getElementById('toggle-log-btn');
+const downloadLogLink = document.getElementById('download-log-link');
+const runIndicatorEl = document.getElementById('run-indicator');
 const restaurantFilterEl = document.getElementById('restaurant-filter');
 const sortFilterEl = document.getElementById('sort-filter');
 const statusEl = document.getElementById('status');
-const logBox = document.getElementById('log-box');
 const resultEl = document.getElementById('result');
 const versionEl = document.getElementById('version');
 
@@ -48,26 +46,33 @@ function setStatus(text, cls = '') {
 function setRunningUi(isRunning) {
   runBtn.disabled = isRunning;
   stopBtn.disabled = !isRunning;
+  if (runIndicatorEl) {
+    runIndicatorEl.classList.toggle('hidden', !isRunning);
+  }
   if (isRunning) {
     downloadBtn.disabled = true;
     downloadPdfBtn.disabled = true;
   }
 }
 
-function appendLogs(lines) {
-  if (!lines || !lines.length) return;
-  const chunk = lines.join('\n') + '\n';
-  logBox.textContent += chunk;
-  logBox.scrollTop = logBox.scrollHeight;
+function updateLogLink() {
+  if (!downloadLogLink) return;
+  const selectedDate = String(dateInput?.value || '').trim();
+  if (activeJobId) {
+    downloadLogLink.classList.remove('disabled');
+    downloadLogLink.setAttribute('href', `/api/log_download?job_id=${encodeURIComponent(String(activeJobId))}`);
+    return;
+  }
+  if (selectedDate) {
+    downloadLogLink.classList.remove('disabled');
+    downloadLogLink.setAttribute('href', `/api/log_download?date=${encodeURIComponent(selectedDate)}`);
+    return;
+  }
+  downloadLogLink.classList.add('disabled');
+  downloadLogLink.setAttribute('href', '#');
 }
 
-function showTemporaryButtonText(btn, text, timeoutMs = 1200) {
-  const original = btn.textContent;
-  btn.textContent = text;
-  setTimeout(() => {
-    btn.textContent = original;
-  }, timeoutMs);
-}
+function appendLogs(_) {}
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -409,7 +414,7 @@ async function loadRestaurantsForDate(dateValue) {
     ].join('');
     restaurantFilterEl.value = nextValue;
   } catch (err) {
-    appendLogs([`[web] Список ресторанов недоступен: ${err.message}`]);
+    console.warn(`[web] Список ресторанов недоступен: ${err.message}`);
   }
 }
 
@@ -426,7 +431,12 @@ function renderAnalytics(data) {
   };
   const sortCaption = sortCaptionMap[data.sort_mode || selectedSort()] || 'ресторан A→Я';
   const baseMeta = `Дата: ${data.date || '—'} · ресторан: ${restaurantCaption} · сортировка: ${sortCaption} · файл: ${data.output_path || '—'}`;
-  analyticsMetaEl.textContent = data.notice ? `${baseMeta} · ${data.notice}` : baseMeta;
+  const noStatuses = Number(data?.status_flow?.orders_with_statuses || 0) === 0;
+  let metaText = data.notice ? `${baseMeta} · ${data.notice}` : baseMeta;
+  if (noStatuses) {
+    metaText += ' · Внимание: история статусов в файле отсутствует, этапы рассчитаны неполно.';
+  }
+  analyticsMetaEl.textContent = metaText;
 
   renderKpis(data.kpi || {}, data.thresholds || {});
 
@@ -501,7 +511,7 @@ async function loadAnalytics(options = {}) {
     renderAnalytics(payload);
     return true;
   } catch (err) {
-    appendLogs([`[web] Аналитика недоступна: ${err.message}`]);
+    console.warn(`[web] Аналитика недоступна: ${err.message}`);
     return false;
   }
 }
@@ -513,6 +523,7 @@ async function restoreLatestJob() {
     if (!job || !job.id) return;
 
     activeJobId = job.id;
+    updateLogLink();
     const savedDate = localStorage.getItem(SELECTED_DATE_KEY);
     if (job.date && !savedDate) {
       dateInput.value = String(job.date);
@@ -540,7 +551,6 @@ async function restoreLatestJob() {
       setStatus('RUNNING', 'running');
       setRunningUi(true);
       const data = await api(`/api/job/${job.id}?from=0`);
-      logBox.textContent = '';
       appendLogs(data.logs || []);
       logOffset = data.log_size || 0;
       startPolling();
@@ -561,7 +571,7 @@ async function restoreLatestJob() {
       }
     }
   } catch (err) {
-    appendLogs([`[web] Не удалось восстановить последнюю задачу: ${err.message}`]);
+    console.warn(`[web] Не удалось восстановить последнюю задачу: ${err.message}`);
   }
 }
 
@@ -575,7 +585,6 @@ async function runExport() {
   runBtn.disabled = true;
   stopBtn.disabled = false;
   resultEl.textContent = '';
-  logBox.textContent = '';
   logOffset = 0;
   downloadBtn.disabled = true;
   resetAnalyticsUi();
@@ -591,6 +600,7 @@ async function runExport() {
     });
 
     activeJobId = payload.job_id;
+    updateLogLink();
     appendLogs([`[web] Запущена задача ${activeJobId} за ${date}`]);
     startPolling();
   } catch (err) {
@@ -610,10 +620,7 @@ async function stopExport() {
     });
     appendLogs([`[web] Отправлен запрос остановки задачи ${activeJobId}`]);
   } catch (err) {
-    appendLogs([`[web] Ошибка остановки: ${err.message}`]);
-    if (String(err.message).includes('HTTP 404')) {
-      appendLogs(['[web] Подсказка: backend устарел (нет /api/stop). Перезапустите UI через start_console.command или run_web.command.']);
-    }
+    console.warn(`[web] Ошибка остановки: ${err.message}`);
     stopBtn.disabled = false;
   }
 }
@@ -658,7 +665,7 @@ function startPolling() {
         }
       }
     } catch (err) {
-      appendLogs([`[web] Ошибка опроса: ${err.message}`]);
+      console.warn(`[web] Ошибка опроса: ${err.message}`);
     }
   }, 1500);
 }
@@ -702,6 +709,7 @@ dateInput.addEventListener('change', async () => {
   if (selected) {
     localStorage.setItem(SELECTED_DATE_KEY, selected);
   }
+  updateLogLink();
   if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
   await loadRestaurantsForDate(selected);
   loadAnalytics({ useSelectedDate: true });
@@ -727,40 +735,6 @@ sortFilterEl.addEventListener('change', () => {
   loadAnalytics({ useSelectedDate: true });
 });
 
-clearBtn.addEventListener('click', async () => {
-  logBox.textContent = '';
-  resultEl.textContent = '';
-  if (!activeJobId) {
-    logOffset = 0;
-    return;
-  }
-  try {
-    const data = await api(`/api/job/${activeJobId}?from=0`);
-    logOffset = data.log_size || 0;
-  } catch (_) {
-    logOffset = 0;
-  }
-});
-
-copyBtn.addEventListener('click', async () => {
-  const text = logBox.textContent || '';
-  if (!text.trim()) {
-    showTemporaryButtonText(copyBtn, 'Пусто');
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(text);
-    showTemporaryButtonText(copyBtn, 'Скопировано');
-  } catch (_) {
-    showTemporaryButtonText(copyBtn, 'Ошибка');
-  }
-});
-
-toggleLogBtn.addEventListener('click', () => {
-  const hidden = logBox.classList.toggle('hidden');
-  toggleLogBtn.textContent = hidden ? 'Показать лог' : 'Скрыть лог';
-});
-
 dateInput.value = localStorage.getItem(SELECTED_DATE_KEY) || todayIso();
 sortFilterEl.value = localStorage.getItem(SELECTED_SORT_KEY) || 'restaurant_asc';
 loadRestaurantsForDate(dateInput.value);
@@ -769,6 +743,7 @@ if (window.APP_META) {
 }
 setStatus('IDLE');
 setRunningUi(false);
+updateLogLink();
 downloadBtn.disabled = true;
 downloadPdfBtn.disabled = true;
 resetAnalyticsUi();
