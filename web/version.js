@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.87",
+  version: "2026.03.30-web.88",
   updatedAt: "2026-03-30",
-  notes: "PDF readability pass: high-contrast headers + explicit units (шт/мин/%) in KPI and table columns"
+  notes: "Windows runtime stability: ignore empty conservative runtime context and handle 401 auth without false method-signature failure"
 };

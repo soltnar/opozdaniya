@@ -858,6 +858,28 @@ def wait_until_service_ready(
                 f"Пример ошибки: {format_errors[0]}"
             )
 
+        unauthorized_errors = [msg for msg in errors if "RPC HTTP error 401" in msg]
+        if unauthorized_errors:
+            print()
+            print("Похоже, сессия не авторизована или пароль еще не введен.")
+            print("Последние ошибки API:")
+            for idx, msg in enumerate(errors, start=1):
+                print(f"  {idx}. {msg}")
+            if (not non_interactive) and sys.stdin is not None and sys.stdin.isatty():
+                print("Введите пароль/подтвердите вход в окне браузера и нажмите Enter.")
+                try:
+                    input()
+                except EOFError:
+                    time.sleep(3)
+            else:
+                print("Ожидаю авторизацию в окне браузера (авторежим, повтор через 3 сек)...")
+                time.sleep(3)
+            try:
+                page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+
         method_errors = [
             msg
             for msg in errors
@@ -1174,6 +1196,8 @@ def apply_runtime_sale_meta(
     har_delivery_context: bool,
 ) -> None:
     if runtime_sale_payload and runtime_sale_called_method:
+        original_template = copy.deepcopy(templates.sale_payload_template)
+        original_called_method = str(templates.sale_called_method or "SaleOrder.List")
         runtime_method = runtime_sale_payload.get("method")
         if isinstance(runtime_method, str) and runtime_method:
             templates.sale_payload_template["method"] = runtime_method
@@ -1196,6 +1220,9 @@ def apply_runtime_sale_meta(
                 "Runtime-контекст: запрос ProductStateId=Done не найден, "
                 "оставляю delivery-контекст из HAR (без переноса ближайших runtime-фильтров)."
             )
+            # В HAR-режиме не подменяем стабильный шаблон runtime-вариантом без Done.
+            templates.sale_payload_template = original_template
+            templates.sale_called_method = original_called_method
         else:
             merged_fields = merge_runtime_filter_context(
                 templates.sale_payload_template,
@@ -1207,6 +1234,13 @@ def apply_runtime_sale_meta(
                 "взял консервативный контекст фильтров из ближайшего SaleOrder.List."
             )
             print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
+            if merged_fields == 0:
+                print(
+                    "Runtime-контекст не содержит совместимых полей фильтра. "
+                    "Откатываю подмену runtime-шаблона и продолжаю с безопасным шаблоном."
+                )
+                templates.sale_payload_template = original_template
+                templates.sale_called_method = original_called_method
     else:
         print(
             "Runtime-запрос SaleOrder.List не найден. Использую встроенный fallback-фильтр."
