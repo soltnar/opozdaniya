@@ -781,23 +781,32 @@ def wait_until_service_ready(
         template.sale_position_type,
         f"{(target_date + timedelta(days=1)):%Y-%m-%d} 00:00:00.000000",
     )
+    preferred_mode = str(getattr(template, "_sale_signature_mode", "full"))
+    mode_order = [m for m in (preferred_mode, "full", "no_sort", "filter_only") if m in {"full", "no_sort", "filter_only"}]
+    # unique preserve order
+    seen_modes: set[str] = set()
+    mode_order = [m for m in mode_order if not (m in seen_modes or seen_modes.add(m))]
 
     while True:
-        payload = build_sale_payload(
-            template=template,
-            target_date=target_date,
-            limit=1,
-            direction="bothways",
-            position=position,
-        )
-
         errors: list[str] = []
         for client in clients:
-            try:
-                client.call(payload, template.sale_called_method)
-                return client
-            except Exception as err:  # noqa: BLE001
-                errors.append(str(err))
+            for mode in mode_order:
+                payload = build_sale_payload(
+                    template=template,
+                    target_date=target_date,
+                    limit=1,
+                    direction="bothways",
+                    position=position,
+                    signature_mode=mode,
+                )
+                try:
+                    client.call(payload, template.sale_called_method)
+                    if mode != preferred_mode:
+                        setattr(template, "_sale_signature_mode", mode)
+                        print(f"Автоподбор сигнатуры SaleOrder.List: {preferred_mode} -> {mode}")
+                    return client
+                except Exception as err:  # noqa: BLE001
+                    errors.append(str(err))
 
         format_errors = [
             msg
@@ -1282,6 +1291,7 @@ def build_sale_payload(
     clear_reglament: bool = False,
     context_relax_level: int = 0,
     scope_relax_mode: str = "keep",
+    signature_mode: str = "full",
 ) -> dict[str, Any]:
     payload = copy.deepcopy(template.sale_payload_template)
     payload["method"] = template.sale_payload_template.get("method", "SaleOrder.List")
@@ -1335,8 +1345,17 @@ def build_sale_payload(
     if record_field_index(filter_record, "ReglamentStates") is not None:
         set_record_field(filter_record, "ReglamentStates", [999])
 
-    ensure_sort_exists(params)
-    params["Навигация"] = build_navigation(params.get("Навигация"), direction, limit, position)
+    mode = signature_mode if signature_mode in {"full", "no_sort", "filter_only"} else "full"
+    if mode == "full":
+        ensure_sort_exists(params)
+        params["Навигация"] = build_navigation(params.get("Навигация"), direction, limit, position)
+    elif mode == "no_sort":
+        params.pop("Сортировка", None)
+        params["Навигация"] = build_navigation(params.get("Навигация"), direction, limit, position)
+    else:
+        # Минимальная сигнатура: только фильтр.
+        params.pop("Сортировка", None)
+        params.pop("Навигация", None)
     return payload
 
 
@@ -1405,6 +1424,7 @@ def fetch_done_orders(
 
     while True:
         page_number += 1
+        signature_mode = str(getattr(template, "_sale_signature_mode", "full"))
         payload = build_sale_payload(
             template,
             target_date,
@@ -1415,6 +1435,7 @@ def fetch_done_orders(
             clear_reglament=clear_reglament,
             context_relax_level=context_relax_level,
             scope_relax_mode=scope_relax_mode,
+            signature_mode=signature_mode,
         )
         if page_number == 1:
             filter_record = payload.get("params", {}).get("Фильтр", {})
