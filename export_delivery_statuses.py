@@ -1038,6 +1038,11 @@ def capture_runtime_service_meta(
         runtime_sale_is_done = True
         break
 
+    # Если list-like runtime-запрос не пойман, нельзя использовать случайный service URL
+    # и заголовки от посторонних методов: это часто приводит к 404 (SaleOrder.List/3).
+    if runtime_sale_payload is None:
+        return None, {}, None, None, False
+
     return (
         str(selected.get("url")),
         runtime_headers,
@@ -1090,7 +1095,7 @@ def apply_runtime_sale_meta(
             print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
     else:
         print(
-            "Runtime-запрос SaleOrder.List не найден. Использую фильтр из HAR."
+            "Runtime-запрос SaleOrder.List не найден. Использую встроенный fallback-фильтр."
         )
 
 

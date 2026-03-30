@@ -361,6 +361,13 @@
   - помимо фиксированных имен теперь ищутся любые `*.har` в папках запуска, Desktop и Downloads,
   - добавлен приоритет delivery-файлов (`dost`/`delivery`) и `rest.saby.ru`.
 
+## 2026-03-30-web.77
+- Исправлен регресс, из-за которого без runtime `SaleOrder.List` иногда подхватывался чужой `service URL`/`x_version` (например `...-211`) и затем падал `SaleOrder.List/3 not found`.
+- Теперь, если list-like runtime-запрос не пойман:
+  - runtime `service_url` и runtime headers не применяются,
+  - используется безопасный встроенный fallback.
+- Уточнен лог: вместо `Использую фильтр из HAR` теперь `Использую встроенный fallback-фильтр`.
+
 ## 2026-03-30-web.76
 - Исправлен массовый сбой history-запросов `Invalid character in header content ["x-calledmethod"]`:
   - `x-calledmethod` теперь принудительно нормализуется в ASCII,
