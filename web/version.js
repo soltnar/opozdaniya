@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.84",
+  version: "2026.03.30-web.85",
   updatedAt: "2026-03-30",
-  notes: "Strict SaleOrder.List signature shaping (/1,/2,/3) with runtime template preservation for contour compatibility"
+  notes: "History payload compatibility fix (ДопПоля/Сортировка/filter fields) + safe x-calledmethod sanitization"
 };

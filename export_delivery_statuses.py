@@ -55,6 +55,15 @@ STATUS_CHANGE_PATTERN = re.compile(
     r'Изменен статус заказа:\s*["«](?P<from>.*?)["»]\s*->\s*["«](?P<to>.*?)["»]'
 )
 
+DEFAULT_HISTORY_ACTIONS = [
+    "Изменение статуса заказа",
+]
+
+DEFAULT_HISTORY_OBJECTS = [
+    "Sale",
+    "Delivery",
+]
+
 
 @dataclass
 class TemplateBundle:
@@ -128,7 +137,7 @@ class SabyRpcClient:
 
 
 def normalize_called_method_header(called_method: str, body_method: str | Any) -> str:
-    called = str(called_method or "").strip()
+    called_raw = str(called_method or "").strip()
     body = str(body_method or "").strip()
 
     def _is_ascii(s: str) -> bool:
@@ -138,7 +147,8 @@ def normalize_called_method_header(called_method: str, body_method: str | Any) -
         except UnicodeEncodeError:
             return False
 
-    if called and _is_ascii(called):
+    called = "".join(ch for ch in called_raw if ord(ch) < 128 and ch.isprintable())
+    if called:
         return called
 
     # История чаще всего падает из-за кириллицы в x-calledmethod.
@@ -148,7 +158,7 @@ def normalize_called_method_header(called_method: str, body_method: str | Any) -
     if body.startswith("SaleOrder.") and _is_ascii(body):
         return body
 
-    ascii_only = "".join(ch for ch in called if ord(ch) < 128 and ch.isprintable())
+    ascii_only = "".join(ch for ch in called_raw if ord(ch) < 128 and ch.isprintable())
     if ascii_only:
         return ascii_only
 
@@ -253,15 +263,26 @@ def make_default_history_payload_template() -> dict[str, Any]:
         "method": "История.History_Of_Instance",
         "params": {
             "Фильтр": {
-                "d": [None, None, ["Изменение статуса заказа"]],
+                "d": [
+                    None,
+                    None,
+                    True,
+                    list(DEFAULT_HISTORY_ACTIONS),
+                    None,
+                    list(DEFAULT_HISTORY_OBJECTS),
+                ],
                 "s": [
                     {"t": "Строка", "n": "GUID"},
+                    {"t": "Строка", "n": "Period"},
+                    {"t": "Логическое", "n": "reverse_navigation"},
+                    {"t": {"n": "Массив", "t": "Строка"}, "n": "Действие"},
                     {"t": "Число целое", "n": "ИдО"},
-                    {"t": "Массив", "n": "Действие"},
+                    {"t": {"n": "Массив", "t": "Строка"}, "n": "Объект"},
                 ],
                 "_type": "record",
                 "f": 0,
             },
+            "Сортировка": None,
             "Навигация": {
                 "d": ["forward", True, 24, None],
                 "s": [
@@ -273,6 +294,7 @@ def make_default_history_payload_template() -> dict[str, Any]:
                 "_type": "record",
                 "f": 0,
             },
+            "ДопПоля": [],
         },
     }
 
@@ -420,6 +442,18 @@ def set_record_field(record: dict[str, Any], field_name: str, value: Any) -> boo
     while len(values) <= index:
         values.append(None)
     values[index] = value
+    return True
+
+
+def upsert_record_field(record: dict[str, Any], field_name: str, field_type: Any, value: Any) -> bool:
+    if set_record_field(record, field_name, value):
+        return True
+    specs = record.setdefault("s", [])
+    values = record.setdefault("d", [])
+    if not isinstance(specs, list) or not isinstance(values, list):
+        return False
+    specs.append({"t": field_type, "n": field_name})
+    values.append(value)
     return True
 
 
@@ -1455,9 +1489,36 @@ def build_history_payload(
     if not isinstance(filter_record, dict):
         raise RuntimeError("Некорректный шаблон: params.Фильтр отсутствует")
 
-    if not set_record_field(filter_record, "GUID", sale_key):
+    params.setdefault("Сортировка", None)
+    if not isinstance(params.get("ДопПоля"), list):
+        params["ДопПоля"] = []
+
+    upsert_record_field(filter_record, "Period", "Строка", None)
+    upsert_record_field(filter_record, "reverse_navigation", "Логическое", True)
+    if not upsert_record_field(
+        filter_record,
+        "Действие",
+        {"n": "Массив", "t": "Строка"},
+        list(DEFAULT_HISTORY_ACTIONS),
+    ):
+        raise RuntimeError("Некорректный шаблон истории: поле Действие не найдено")
+    actions = get_record_field(filter_record, "Действие")
+    if isinstance(actions, list):
+        if "Изменение статуса заказа" not in actions:
+            actions.append("Изменение статуса заказа")
+    else:
+        set_record_field(filter_record, "Действие", list(DEFAULT_HISTORY_ACTIONS))
+
+    upsert_record_field(
+        filter_record,
+        "Объект",
+        {"n": "Массив", "t": "Строка"},
+        list(DEFAULT_HISTORY_OBJECTS),
+    )
+
+    if not upsert_record_field(filter_record, "GUID", "Строка", sale_key):
         raise RuntimeError("Некорректный шаблон истории: поле GUID не найдено")
-    if not set_record_field(filter_record, "ИдО", int(sale_id)):
+    if not upsert_record_field(filter_record, "ИдО", "Число целое", int(sale_id)):
         raise RuntimeError("Некорректный шаблон истории: поле ИдО не найдено")
 
     history_signature_mode = str(getattr(template, "_history_signature_mode", "full"))
