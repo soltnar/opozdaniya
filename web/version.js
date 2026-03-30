@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.74",
+  version: "2026.03.30-web.75",
   updatedAt: "2026-03-30",
-  notes: "Runtime capture is now timeout-safe (no crash on Page.reload) with hard fallback to universal runtime mode"
+  notes: "Runtime capture no longer uses page.reload; safer for unstable Win10 Chromium sessions"
 };

@@ -909,12 +909,8 @@ def capture_runtime_service_meta(
                     page.wait_for_timeout(800)
                 except Exception:  # noqa: BLE001
                     pass
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=8_000)
-                except Exception as err:  # noqa: BLE001
-                    # Не считаем reload обязательным шагом; его timeout не должен валить запуск.
-                    if not _is_timeout_error(err):
-                        raise
+                # На части Win10-окружений reload может закрывать/ронять вкладку Chromium.
+                # Для runtime-capture достаточно первичной навигации + клика по "Выполнен".
                 break
             except Exception as err:  # noqa: BLE001
                 if not _is_target_closed_error(err):
