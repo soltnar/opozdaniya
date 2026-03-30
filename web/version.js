@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.86",
+  version: "2026.03.30-web.87",
   updatedAt: "2026-03-30",
-  notes: "PDF report redesigned: auto-fit widths (no clipping on macOS), clearer KPI/risks/problem sections, improved readability"
+  notes: "PDF readability pass: high-contrast headers + explicit units (шт/мин/%) in KPI and table columns"
 };

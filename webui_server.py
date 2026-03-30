@@ -1021,6 +1021,19 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         leading=13,
         spaceAfter=4,
     )
+    header_cell_style = ParagraphStyle(
+        "HeaderCell",
+        parent=cell_style,
+        fontName=font_name,
+        fontSize=8,
+        leading=10,
+        textColor=colors.white,
+    )
+    header_cell_right_style = ParagraphStyle(
+        "HeaderCellRight",
+        parent=header_cell_style,
+        alignment=TA_RIGHT,
+    )
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1045,6 +1058,10 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         text = html.escape("" if txt is None else str(txt))
         return Paragraph(text, cell_right_style if right else cell_style)
 
+    def ph(txt: Any, *, right: bool = False) -> Paragraph:
+        text = html.escape("" if txt is None else str(txt))
+        return Paragraph(f"<b>{text}</b>", header_cell_right_style if right else header_cell_style)
+
     def fit_widths(weights: list[float]) -> list[float]:
         total = sum(weights) or 1.0
         return [doc.width * (w / total) for w in weights]
@@ -1062,12 +1079,13 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
     story.append(Paragraph(f"Отчет доставки за {date_part}", styles["Title"]))
     story.append(Paragraph(f"Ресторан: {restaurant_part}", styles["Normal"]))
     story.append(Paragraph("PDF адаптирован под ширину страницы: без обрезания колонок.", styles["Normal"]))
+    story.append(Paragraph("Единицы: заказы = шт, длительности = минуты, доля = %.", styles["Normal"]))
     story.append(Spacer(1, 8))
 
     kpi_rows = [
-        [p("Показатель"), p("Значение"), p("Показатель"), p("Значение")],
-        [p("Заказов в анализе"), p(kpi.get("orders"), right=True), p("Доставка / Самовывоз"), p(f"{kpi.get('delivery_orders', 0)} / {kpi.get('pickup_orders', 0)}", right=True)],
-        [p(f"Опозданий > {int(threshold)} мин"), p(f"{kpi.get('overdue_count', 0)} ({fmt_num(kpi.get('overdue_rate'), 1, '0.0')}%)", right=True), p("Среднее время заказа, мин"), p(fmt_num(kpi.get("avg_total_min"), 1), right=True)],
+        [ph("Показатель"), ph("Значение"), ph("Показатель"), ph("Значение")],
+        [p("Заказов в анализе, шт"), p(kpi.get("orders"), right=True), p("Доставка / Самовывоз, шт"), p(f"{kpi.get('delivery_orders', 0)} / {kpi.get('pickup_orders', 0)}", right=True)],
+        [p(f"Опозданий > {int(threshold)} мин, шт (%)"), p(f"{kpi.get('overdue_count', 0)} ({fmt_num(kpi.get('overdue_rate'), 1, '0.0')}%)", right=True), p("Среднее время заказа, мин"), p(fmt_num(kpi.get("avg_total_min"), 1), right=True)],
         [p("P90 времени заказа, мин"), p(fmt_num(kpi.get("p90_total_min"), 1), right=True), p("Средняя доставка, мин"), p(fmt_num(kpi.get("avg_delivery_min"), 1), right=True)],
     ]
     kpi_table = Table(kpi_rows, colWidths=fit_widths([18, 12, 18, 12]), repeatRows=1)
@@ -1091,7 +1109,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
 
     if stages:
         story.append(Paragraph("Этапы: среднее / P90 / максимум (мин)", section_style))
-        stage_rows = [[p("Этап"), p("Кол-во", right=True), p("Среднее", right=True), p("P90", right=True), p("Макс", right=True)]]
+        stage_rows = [[ph("Этап"), ph("Кол-во, шт", right=True), ph("Среднее, мин", right=True), ph("P90, мин", right=True), ph("Макс, мин", right=True)]]
         for stage in stages:
             stage_rows.append(
                 [
@@ -1120,7 +1138,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         story.append(Spacer(1, 8))
 
     if restaurant_totals:
-        summary_rows = [[p("Ресторан"), p("Заказы", right=True), p("Опозд.", right=True), p("Доля %", right=True), p("Avg итого", right=True), p("P90 итого", right=True), p("Avg последний этап", right=True)]]
+        summary_rows = [[ph("Ресторан"), ph("Заказы, шт", right=True), ph("Опозд., шт", right=True), ph("Доля, %", right=True), ph("Avg итого, мин", right=True), ph("P90 итого, мин", right=True), ph("Avg последний этап, мин", right=True)]]
         totals_for_pdf = sorted(
             restaurant_totals,
             key=lambda x: (-(x.get("overdue_share") or 0.0), -(x.get("orders") or 0)),
@@ -1160,7 +1178,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
 
     if hotspots:
         story.append(Paragraph("Точки нагрузки (ТОП 10)", section_style))
-        hotspot_rows = [[p("Ресторан"), p("Заказы", right=True), p("Avg итого", right=True), p("Avg доставка", right=True), p("P90 доставка", right=True), p("Доля опозданий %", right=True)]]
+        hotspot_rows = [[ph("Ресторан"), ph("Заказы, шт", right=True), ph("Avg итого, мин", right=True), ph("Avg доставка, мин", right=True), ph("P90 доставка, мин", right=True), ph("Доля опозданий, %", right=True)]]
         for row in hotspots[:10]:
             hotspot_rows.append(
                 [
@@ -1190,7 +1208,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
     if problem_orders:
         story.append(Paragraph("Проблемные заказы (опоздание > 60 мин)", section_style))
         prob_rows = [
-            [p("Ресторан"), p("Заказ"), p("Тип"), p("План"), p("Факт"), p("Δ мин", right=True), p("Итого", right=True), p("Этапы (обр/гот/сб/посл)", right=True), p("Причина")]
+            [ph("Ресторан"), ph("Заказ"), ph("Тип"), ph("План прибытия"), ph("Факт (выполнен)"), ph("Δ, мин", right=True), ph("Итого, мин", right=True), ph("Этапы, мин (обр/гот/сб/посл)", right=True), ph("Причина")]
         ]
         for row in problem_orders[:60]:
             last_stage = row.get("pickup_wait_min") if row.get("order_type") == "Самовывоз" else row.get("delivery_min")
@@ -1237,18 +1255,18 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
 
     story.append(Paragraph("Полный список заказов", section_style))
     header = [
-        p("Ресторан"),
-        p("Заказ"),
-        p("Тип"),
-        p("План"),
-        p("Факт"),
-        p("Δ план/факт", right=True),
-        p("Итого", right=True),
-        p("Обраб.", right=True),
-        p("Готовка", right=True),
-        p("Сборка", right=True),
-        p("Доставка/Выд.", right=True),
-        p("Причина"),
+        ph("Ресторан"),
+        ph("Заказ"),
+        ph("Тип"),
+        ph("План прибытия"),
+        ph("Факт (выполнен)"),
+        ph("Δ план/факт, мин", right=True),
+        ph("Итого, мин", right=True),
+        ph("Обраб., мин", right=True),
+        ph("Готовка, мин", right=True),
+        ph("Сборка, мин", right=True),
+        ph("Доставка/Выдача, мин", right=True),
+        ph("Причина"),
     ]
     table_rows = [header]
     for row in rows:
