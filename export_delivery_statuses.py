@@ -898,15 +898,27 @@ def capture_runtime_service_meta(
             return
         if "/service/" not in request.url:
             return
+        frame_url = ""
+        try:
+            frame_obj = request.frame
+            frame_url = str(frame_obj.url or "") if frame_obj is not None else ""
+        except Exception:  # noqa: BLE001
+            # Отсекаем не-страничные запросы (например, APIRequestContext),
+            # чтобы не захватывать служебные вызовы самого скрипта.
+            return
         headers = {str(k).lower(): str(v) for k, v in request.headers.items()}
         if "x-calledmethod" not in headers:
+            return
+        referer = headers.get("referer", "")
+        if "/page/delivery" not in referer and "/page/delivery" not in frame_url:
             return
         captures.append(
             {
                 "url": request.url,
                 "headers": headers,
                 "called_method": headers.get("x-calledmethod", ""),
-                "referer": headers.get("referer", ""),
+                "referer": referer,
+                "frame_url": frame_url,
                 "post_data": request.post_data,
             }
         )
@@ -917,10 +929,18 @@ def capture_runtime_service_meta(
             return False
         if "counters" in called:
             return False
-        if called.startswith("saleorder.list") or ".list" in called:
-            return True
+        if "list" not in called:
+            return False
         if not isinstance(payload, dict):
             return False
+        body_method = str(payload.get("method", "")).lower()
+        if body_method:
+            if not body_method.startswith("saleorder."):
+                return False
+            if "counters" in body_method:
+                return False
+            if "list" not in body_method:
+                return False
         params = payload.get("params")
         if not isinstance(params, dict):
             return False
@@ -928,10 +948,27 @@ def capture_runtime_service_meta(
         if not isinstance(filter_record, dict):
             return False
         names = set(record_field_names(filter_record))
-        # Для списка заказов ожидаем хотя бы часть датного фильтра.
-        if {"DateTimeStartWTZ", "DateTimeEndWTZ"} & names:
+        if not {"DateTimeStartWTZ", "DateTimeEndWTZ"}.issubset(names):
+            return False
+        # Для реального реестра заказов ожидаем профильные поля.
+        expected = {
+            "DateTimeStartWTZ",
+            "DateTimeEndWTZ",
+            "ProductStateId",
+            "Reglament",
+            "OurOrgFilter",
+            "CRMFilter",
+            "SaleNomenclatureFilter",
+            "NotFields",
+            "ProductStateFields",
+        }
+        if not (names & expected):
+            return False
+        # Разрешаем только list-подобные методы.
+        if called.startswith("saleorder.list") or ".list" in called:
             return True
-        return False
+        # Фоллбек: если метод нестандартный, но фильтр явно реестровый.
+        return bool({"DateTimeStartWTZ", "DateTimeEndWTZ"} & names)
 
     def _capture_is_list_like(c: dict[str, Any]) -> bool:
         called = str(c.get("called_method", ""))
@@ -990,7 +1027,10 @@ def capture_runtime_service_meta(
         while time.time() < deadline:
             if any(
                 _capture_is_list_like(c)
-                and "/page/delivery" in c.get("referer", "")
+                and (
+                    "/page/delivery" in c.get("referer", "")
+                    or "/page/delivery" in c.get("frame_url", "")
+                )
                 for c in captures
             ):
                 break
@@ -1026,7 +1066,13 @@ def capture_runtime_service_meta(
         captures,
         key=lambda c: (
             0
-            if (c.get("called_method", "").startswith("SaleOrder.") and "/page/delivery" in c.get("referer", ""))
+            if (
+                c.get("called_method", "").startswith("SaleOrder.")
+                and (
+                    "/page/delivery" in c.get("referer", "")
+                    or "/page/delivery" in c.get("frame_url", "")
+                )
+            )
             else 1
             if c.get("called_method", "").startswith("SaleOrder.")
             else 2,
@@ -1397,7 +1443,11 @@ def build_history_payload(
     if not set_record_field(filter_record, "ИдО", int(sale_id)):
         raise RuntimeError("Некорректный шаблон истории: поле ИдО не найдено")
 
-    params["Навигация"] = build_navigation(params.get("Навигация"), "forward", limit, position)
+    history_signature_mode = str(getattr(template, "_history_signature_mode", "full"))
+    if history_signature_mode == "filter_only":
+        params.pop("Навигация", None)
+    else:
+        params["Навигация"] = build_navigation(params.get("Навигация"), "forward", limit, position)
     return payload
 
 
@@ -1687,6 +1737,32 @@ def history_method_variants(
     return unique
 
 
+def history_payload_variants(
+    payload: dict[str, Any],
+    preferred_mode: str = "full",
+) -> list[tuple[str, dict[str, Any]]]:
+    full_payload = copy.deepcopy(payload)
+    filter_only_payload = copy.deepcopy(payload)
+    params = filter_only_payload.get("params", {})
+    if isinstance(params, dict):
+        params.pop("Навигация", None)
+
+    variants: list[tuple[str, dict[str, Any]]] = [
+        ("full", full_payload),
+        ("filter_only", filter_only_payload),
+    ]
+    ordered: list[tuple[str, dict[str, Any]]] = []
+    preferred = preferred_mode if preferred_mode in {"full", "filter_only"} else "full"
+    for mode in (preferred, "full", "filter_only"):
+        for item_mode, item_payload in variants:
+            if item_mode != mode:
+                continue
+            if any(existing_mode == item_mode for existing_mode, _ in ordered):
+                continue
+            ordered.append((item_mode, item_payload))
+    return ordered
+
+
 def call_history_with_auto_method(
     client: SabyRpcClient,
     template: TemplateBundle,
@@ -1709,34 +1785,40 @@ def call_history_with_auto_method(
         except Exception:  # noqa: BLE001
             pass
 
+    preferred_history_mode = str(getattr(template, "_history_signature_mode", "full"))
+
     for svc_url in service_urls:
         svc_client = client if svc_url == client._service_url else SabyRpcClient(
             client._context,
             svc_url,
             client._base_headers,
         )
-        for called_method, body_method in variants:
-            trial_payload = copy.deepcopy(payload)
-            trial_payload["method"] = body_method
-            try:
-                result = svc_client.call(trial_payload, called_method)
-                if (
-                    called_method != template.history_called_method
-                    or body_method != str(template.history_payload_template.get("method"))
-                    or svc_url != client._service_url
-                ):
-                    print(
-                        "Автоподбор history: "
-                        f"url={svc_url}, header={called_method}, body={body_method}"
-                    )
-                template.history_called_method = called_method
-                template.history_payload_template["method"] = body_method
-                return result
-            except Exception as err:  # noqa: BLE001
-                last_err = err
-                if not is_history_method_not_found_error(str(err)):
-                    raise
-                continue
+        payload_variants = history_payload_variants(payload, preferred_mode=preferred_history_mode)
+        for signature_mode, signature_payload in payload_variants:
+            for called_method, body_method in variants:
+                trial_payload = copy.deepcopy(signature_payload)
+                trial_payload["method"] = body_method
+                try:
+                    result = svc_client.call(trial_payload, called_method)
+                    if (
+                        called_method != template.history_called_method
+                        or body_method != str(template.history_payload_template.get("method"))
+                        or svc_url != client._service_url
+                        or signature_mode != preferred_history_mode
+                    ):
+                        print(
+                            "Автоподбор history: "
+                            f"url={svc_url}, header={called_method}, body={body_method}, signature={signature_mode}"
+                        )
+                    template.history_called_method = called_method
+                    template.history_payload_template["method"] = body_method
+                    setattr(template, "_history_signature_mode", signature_mode)
+                    return result
+                except Exception as err:  # noqa: BLE001
+                    last_err = err
+                    if not is_history_method_not_found_error(str(err)):
+                        raise
+                    continue
 
     if last_err is not None:
         raise last_err

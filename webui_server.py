@@ -88,7 +88,7 @@ def run_export_job(job_id: str, date_value: str) -> None:
             ]
     output_path = None
 
-    def run_once(cmd: list[str]) -> int:
+    def run_once(cmd: list[str]) -> tuple[int, list[str]]:
         nonlocal output_path
         append_log(job_id, f"[server] start: {' '.join(cmd)}")
 
@@ -100,6 +100,7 @@ def run_export_job(job_id: str, date_value: str) -> None:
             text=True,
             bufsize=1,
         )
+        run_lines: list[str] = []
         with JOB_LOCK:
             RUNNING_PROCESSES[job_id] = process
             job = JOBS.get(job_id)
@@ -109,16 +110,35 @@ def run_export_job(job_id: str, date_value: str) -> None:
         assert process.stdout is not None
         for line in process.stdout:
             append_log(job_id, line)
+            run_lines.append(line.rstrip("\n"))
             if "Excel сохранен:" in line:
                 output_path = line.split("Excel сохранен:", 1)[1].strip()
 
         return_code = process.wait()
         with JOB_LOCK:
             RUNNING_PROCESSES.pop(job_id, None)
-        return return_code
+        return return_code, run_lines
+
+    def should_retry_with_clean_profile(lines: list[str]) -> bool:
+        text = "\n".join(lines).lower()
+        markers = (
+            "сервер отклонил метод saleorder.list",
+            "method not found",
+            "saleorder.list/3",
+            "runtime-запрос saleorder.list не найден",
+            "page.reload: timeout",
+        )
+        return any(marker in text for marker in markers)
+
+    def clean_profile_dir() -> Path:
+        base = ROOT / ".saby_profile_runs"
+        base.mkdir(parents=True, exist_ok=True)
+        target = base / f"clean_{job_id}"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
 
     try:
-        return_code = run_once(base_cmd)
+        return_code, run_lines = run_once(base_cmd)
         with JOB_LOCK:
             stop_requested = bool(JOBS.get(job_id, {}).get("stop_requested"))
         if stop_requested:
@@ -130,6 +150,26 @@ def run_export_job(job_id: str, date_value: str) -> None:
             )
             append_log(job_id, "[server] stopped by user")
             return
+
+        if return_code != 0 and should_retry_with_clean_profile(run_lines):
+            fresh_profile = clean_profile_dir()
+            append_log(
+                job_id,
+                f"[server] auto-retry on clean profile: {fresh_profile}",
+            )
+            retry_cmd = base_cmd + ["--profile-dir", str(fresh_profile)]
+            return_code, run_lines = run_once(retry_cmd)
+            with JOB_LOCK:
+                stop_requested = bool(JOBS.get(job_id, {}).get("stop_requested"))
+            if stop_requested:
+                update_job(
+                    job_id,
+                    status="stopped",
+                    ended_at=now_iso(),
+                    error=None,
+                )
+                append_log(job_id, "[server] stopped by user")
+                return
 
         if return_code == 0:
             update_job(
@@ -217,12 +257,14 @@ def stop_job(job_id: str | None = None) -> dict:
     return {"job_id": target_id, "status": job.get("status", "stopping")}
 
 
-def run_embedded_worker(date_value: str) -> int:
+def run_embedded_worker(date_value: str, profile_dir_override: str | None = None) -> int:
     # Worker mode for frozen single-exe build: execute export script inside this process.
     import export_delivery_statuses  # noqa: PLC0415
 
     saved_argv = list(sys.argv)
     sys.argv = ["export_delivery_statuses.py", "--date", date_value, "--non-interactive"]
+    if profile_dir_override:
+        sys.argv.extend(["--profile-dir", profile_dir_override])
     try:
         try:
             result = export_delivery_statuses.main()
@@ -1572,7 +1614,13 @@ def main() -> int:
         except Exception:
             print("worker mode requires --date YYYY-MM-DD")
             return 2
-        return run_embedded_worker(str(date_value))
+        profile_override: str | None = None
+        try:
+            pidx = sys.argv.index("--profile-dir")
+            profile_override = str(sys.argv[pidx + 1]).strip() or None
+        except Exception:
+            profile_override = None
+        return run_embedded_worker(str(date_value), profile_override=profile_override)
 
     worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():
