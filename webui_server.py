@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import io
+import html
 import math
 import re
 import statistics
@@ -21,8 +22,9 @@ from urllib.parse import parse_qs, urlparse
 
 from openpyxl import Workbook, load_workbook
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -985,6 +987,9 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
     payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
     restaurant_totals = payload.get("restaurant_totals") or []
+    stages = payload.get("stages") or []
+    hotspots = payload.get("hotspots") or []
+    problem_orders = payload.get("problem_orders") or []
     kpi = payload.get("kpi") or {}
     threshold = float((payload.get("thresholds") or {}).get("overdue_total_min", 60.0))
 
@@ -992,6 +997,30 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
     styles = getSampleStyleSheet()
     for style_key in ("Normal", "Title", "Heading2"):
         styles[style_key].fontName = font_name
+    styles["Normal"].fontSize = 9
+    styles["Normal"].leading = 11
+
+    cell_style = ParagraphStyle(
+        "Cell",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=7.6,
+        leading=9.1,
+        wordWrap="CJK",
+    )
+    cell_right_style = ParagraphStyle(
+        "CellRight",
+        parent=cell_style,
+        alignment=TA_RIGHT,
+    )
+    section_style = ParagraphStyle(
+        "Section",
+        parent=styles["Heading2"],
+        fontName=font_name,
+        fontSize=11,
+        leading=13,
+        spaceAfter=4,
+    )
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1004,112 +1033,276 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         title="Отчет по доставке",
     )
     story = []
+
+    def fmt_num(value: Any, digits: int = 1, empty: str = "—") -> str:
+        if value is None:
+            return empty
+        if isinstance(value, (int, float)):
+            return f"{float(value):.{digits}f}"
+        return str(value)
+
+    def p(txt: Any, *, right: bool = False) -> Paragraph:
+        text = html.escape("" if txt is None else str(txt))
+        return Paragraph(text, cell_right_style if right else cell_style)
+
+    def fit_widths(weights: list[float]) -> list[float]:
+        total = sum(weights) or 1.0
+        return [doc.width * (w / total) for w in weights]
+
+    def _on_page(canvas: Any, pdf_doc: Any) -> None:
+        canvas.saveState()
+        canvas.setFont(font_name, 8)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(doc.leftMargin, 12, f"Файл: {file_path.name}")
+        canvas.drawRightString(pdf_doc.pagesize[0] - doc.rightMargin, 12, f"Стр. {pdf_doc.page}")
+        canvas.restoreState()
+
     date_part = file_path.stem.replace("order_status_history_", "")
     restaurant_part = restaurant_filter or "Все рестораны"
     story.append(Paragraph(f"Отчет доставки за {date_part}", styles["Title"]))
     story.append(Paragraph(f"Ресторан: {restaurant_part}", styles["Normal"]))
-    story.append(
-        Paragraph(
-            (
-                f"Заказов: {kpi.get('orders', 0)} | "
-                f"Опозданий (>{int(threshold)} мин): {kpi.get('overdue_count', 0)} ({(kpi.get('overdue_rate') or 0):.1f}%) | "
-                f"Среднее время заказа: {(kpi.get('avg_total_min') or 0):.1f} мин"
-            ),
-            styles["Normal"],
-        )
-    )
+    story.append(Paragraph("PDF адаптирован под ширину страницы: без обрезания колонок.", styles["Normal"]))
     story.append(Spacer(1, 8))
 
-    if restaurant_totals:
-        summary_header = ["Ресторан", "Заказы", "Опозд.", "Доля %", "Avg итого", "P90 итого"]
-        summary_rows = [summary_header]
-        for row in restaurant_totals[:25]:
-            summary_rows.append(
+    kpi_rows = [
+        [p("Показатель"), p("Значение"), p("Показатель"), p("Значение")],
+        [p("Заказов в анализе"), p(kpi.get("orders"), right=True), p("Доставка / Самовывоз"), p(f"{kpi.get('delivery_orders', 0)} / {kpi.get('pickup_orders', 0)}", right=True)],
+        [p(f"Опозданий > {int(threshold)} мин"), p(f"{kpi.get('overdue_count', 0)} ({fmt_num(kpi.get('overdue_rate'), 1, '0.0')}%)", right=True), p("Среднее время заказа, мин"), p(fmt_num(kpi.get("avg_total_min"), 1), right=True)],
+        [p("P90 времени заказа, мин"), p(fmt_num(kpi.get("p90_total_min"), 1), right=True), p("Средняя доставка, мин"), p(fmt_num(kpi.get("avg_delivery_min"), 1), right=True)],
+    ]
+    kpi_table = Table(kpi_rows, colWidths=fit_widths([18, 12, 18, 12]), repeatRows=1)
+    kpi_table.setStyle(
+        TableStyle(
+            [
+                ("FONT", (0, 0), (-1, -1), font_name, 8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(kpi_table)
+    story.append(Spacer(1, 8))
+
+    if stages:
+        story.append(Paragraph("Этапы: среднее / P90 / максимум (мин)", section_style))
+        stage_rows = [[p("Этап"), p("Кол-во", right=True), p("Среднее", right=True), p("P90", right=True), p("Макс", right=True)]]
+        for stage in stages:
+            stage_rows.append(
                 [
-                    str(row.get("restaurant") or "—"),
-                    str(int(row.get("orders") or 0)),
-                    str(int(row.get("overdue_count") or 0)),
-                    f"{float(row.get('overdue_share') or 0):.1f}",
-                    "—" if row.get("avg_total_min") is None else f"{float(row.get('avg_total_min')):.1f}",
-                    "—" if row.get("p90_total_min") is None else f"{float(row.get('p90_total_min')):.1f}",
+                    p(stage.get("name") or "—"),
+                    p(stage.get("count") or 0, right=True),
+                    p(fmt_num(stage.get("avg"), 1), right=True),
+                    p(fmt_num(stage.get("p90"), 1), right=True),
+                    p(fmt_num(stage.get("max"), 1), right=True),
                 ]
             )
-        story.append(Paragraph("Итоги по ресторанам", styles["Heading2"]))
-        rest_table = Table(summary_rows, colWidths=[200, 55, 55, 55, 70, 70], repeatRows=1)
+        stage_table = Table(stage_rows, colWidths=fit_widths([20, 8, 10, 10, 10]), repeatRows=1)
+        stage_table.setStyle(
+            TableStyle(
+                [
+                    ("FONT", (0, 0), (-1, -1), font_name, 8),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(stage_table)
+        story.append(Spacer(1, 8))
+
+    if restaurant_totals:
+        summary_rows = [[p("Ресторан"), p("Заказы", right=True), p("Опозд.", right=True), p("Доля %", right=True), p("Avg итого", right=True), p("P90 итого", right=True), p("Avg последний этап", right=True)]]
+        totals_for_pdf = sorted(
+            restaurant_totals,
+            key=lambda x: (-(x.get("overdue_share") or 0.0), -(x.get("orders") or 0)),
+        )
+        for row in totals_for_pdf[:20]:
+            summary_rows.append(
+                [
+                    p(row.get("restaurant") or "—"),
+                    p(int(row.get("orders") or 0), right=True),
+                    p(int(row.get("overdue_count") or 0), right=True),
+                    p(fmt_num(row.get("overdue_share"), 1, "0.0"), right=True),
+                    p(fmt_num(row.get("avg_total_min"), 1), right=True),
+                    p(fmt_num(row.get("p90_total_min"), 1), right=True),
+                    p(fmt_num(row.get("avg_last_mile_min"), 1), right=True),
+                ]
+            )
+        story.append(Paragraph("Рестораны с риском опозданий", section_style))
+        rest_table = Table(summary_rows, colWidths=fit_widths([34, 8, 8, 8, 10, 10, 12]), repeatRows=1)
         rest_style = TableStyle(
             [
                 ("FONT", (0, 0), (-1, -1), font_name, 8),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c7cdd4")),
-                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
             ]
         )
+        for idx, row in enumerate(totals_for_pdf[:20], start=1):
+            if float(row.get("overdue_share") or 0) >= 20:
+                rest_style.add("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#fff1f2"))
+                rest_style.add("TEXTCOLOR", (2, idx), (3, idx), colors.HexColor("#b91c1c"))
         rest_table.setStyle(rest_style)
         story.append(rest_table)
         story.append(Spacer(1, 8))
 
+    if hotspots:
+        story.append(Paragraph("Точки нагрузки (ТОП 10)", section_style))
+        hotspot_rows = [[p("Ресторан"), p("Заказы", right=True), p("Avg итого", right=True), p("Avg доставка", right=True), p("P90 доставка", right=True), p("Доля опозданий %", right=True)]]
+        for row in hotspots[:10]:
+            hotspot_rows.append(
+                [
+                    p(row.get("restaurant") or "—"),
+                    p(row.get("orders") or 0, right=True),
+                    p(fmt_num(row.get("avg_total"), 1), right=True),
+                    p(fmt_num(row.get("avg_delivery"), 1), right=True),
+                    p(fmt_num(row.get("p90_delivery"), 1), right=True),
+                    p(fmt_num(row.get("late_share"), 1), right=True),
+                ]
+            )
+        hotspot_table = Table(hotspot_rows, colWidths=fit_widths([34, 8, 10, 10, 10, 10]), repeatRows=1)
+        hotspot_style = TableStyle(
+            [
+                ("FONT", (0, 0), (-1, -1), font_name, 8),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c7cdd4")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+        hotspot_table.setStyle(hotspot_style)
+        story.append(hotspot_table)
+        story.append(Spacer(1, 8))
+
+    if problem_orders:
+        story.append(Paragraph("Проблемные заказы (опоздание > 60 мин)", section_style))
+        prob_rows = [
+            [p("Ресторан"), p("Заказ"), p("Тип"), p("План"), p("Факт"), p("Δ мин", right=True), p("Итого", right=True), p("Этапы (обр/гот/сб/посл)", right=True), p("Причина")]
+        ]
+        for row in problem_orders[:60]:
+            last_stage = row.get("pickup_wait_min") if row.get("order_type") == "Самовывоз" else row.get("delivery_min")
+            phases = " / ".join(
+                [
+                    fmt_num(row.get("processing_min"), 1),
+                    fmt_num(row.get("cooking_min"), 1),
+                    fmt_num(row.get("assembly_min"), 1),
+                    fmt_num(last_stage, 1),
+                ]
+            )
+            prob_rows.append(
+                [
+                    p(row.get("restaurant") or "—"),
+                    p(row.get("number") or row.get("sale") or "—"),
+                    p(row.get("order_type") or "—"),
+                    p(row.get("promised_time") or "—"),
+                    p(row.get("done_time") or "—"),
+                    p(fmt_num(row.get("promised_delta_min"), 1), right=True),
+                    p(fmt_num(row.get("total_min"), 1), right=True),
+                    p(phases, right=True),
+                    p(row.get("delay_reason") or "—"),
+                ]
+            )
+        prob_table = Table(prob_rows, colWidths=fit_widths([22, 7, 6, 10, 10, 7, 7, 14, 17]), repeatRows=1)
+        prob_style = TableStyle(
+            [
+                ("FONT", (0, 0), (-1, -1), font_name, 7.5),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7f1d1d")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]
+        )
+        for idx in range(1, len(prob_rows)):
+            prob_style.add("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#fff1f2"))
+        prob_table.setStyle(prob_style)
+        story.append(prob_table)
+        story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Полный список заказов", section_style))
     header = [
-        "Ресторан",
-        "Заказ",
-        "План прибытия",
-        "Факт (выполнен)",
-        "Δ план/факт (мин)",
-        "Итого",
-        "Обработка",
-        "Готовка",
-        "Сборка",
-        "Доставка/Выдача",
-        "Причина",
+        p("Ресторан"),
+        p("Заказ"),
+        p("Тип"),
+        p("План"),
+        p("Факт"),
+        p("Δ план/факт", right=True),
+        p("Итого", right=True),
+        p("Обраб.", right=True),
+        p("Готовка", right=True),
+        p("Сборка", right=True),
+        p("Доставка/Выд.", right=True),
+        p("Причина"),
     ]
     table_rows = [header]
     for row in rows:
         last_stage = row.get("pickup_wait_min") if row.get("order_type") == "Самовывоз" else row.get("delivery_min")
         delta = row.get("promised_delta_min")
-        delta_text = "—"
+        delta_text = fmt_num(delta, 1)
         if isinstance(delta, (int, float)):
-            delta_text = f"{delta:+.1f}"
+            delta_text = f"{float(delta):+0.1f}"
         table_rows.append(
             [
-                str(row.get("restaurant") or "—"),
-                str(row.get("number") or row.get("sale") or "—"),
-                str(row.get("promised_time") or "—"),
-                str(row.get("done_time") or "—"),
-                delta_text,
-                "—" if row.get("total_min") is None else f"{float(row.get('total_min')):.1f}",
-                "—" if row.get("processing_min") is None else f"{float(row.get('processing_min')):.1f}",
-                "—" if row.get("cooking_min") is None else f"{float(row.get('cooking_min')):.1f}",
-                "—" if row.get("assembly_min") is None else f"{float(row.get('assembly_min')):.1f}",
-                "—" if last_stage is None else f"{float(last_stage):.1f}",
-                str(row.get("delay_reason") or "—"),
+                p(row.get("restaurant") or "—"),
+                p(row.get("number") or row.get("sale") or "—"),
+                p(row.get("order_type") or "—"),
+                p(row.get("promised_time") or "—"),
+                p(row.get("done_time") or "—"),
+                p(delta_text, right=True),
+                p(fmt_num(row.get("total_min"), 1), right=True),
+                p(fmt_num(row.get("processing_min"), 1), right=True),
+                p(fmt_num(row.get("cooking_min"), 1), right=True),
+                p(fmt_num(row.get("assembly_min"), 1), right=True),
+                p(fmt_num(last_stage, 1), right=True),
+                p(row.get("delay_reason") or "—"),
             ]
         )
 
-    widths = [130, 66, 88, 88, 72, 45, 50, 50, 50, 70, 170]
+    widths = fit_widths([21, 7, 6, 10, 10, 7, 6, 6, 6, 6, 8, 17])
     table = Table(table_rows, colWidths=widths, repeatRows=1)
     style = TableStyle(
         [
-            ("FONT", (0, 0), (-1, -1), font_name, 8),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+            ("FONT", (0, 0), (-1, -1), font_name, 7.2),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c7cdd4")),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("ALIGN", (4, 1), (9, -1), "RIGHT"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.2),
         ]
     )
     for idx, row in enumerate(rows, start=1):
         is_overdue = bool(isinstance(row.get("total_min"), (int, float)) and float(row.get("total_min")) > threshold)
         is_late_plan = bool(isinstance(row.get("promised_delta_min"), (int, float)) and float(row.get("promised_delta_min")) > 0)
-        if is_overdue or is_late_plan:
+        if idx % 2 == 0:
+            style.add("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#f8fafc"))
+        if is_overdue:
             style.add("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#fff1f2"))
-            style.add("TEXTCOLOR", (4, idx), (5, idx), colors.HexColor("#b91c1c"))
+            style.add("TEXTCOLOR", (5, idx), (6, idx), colors.HexColor("#b91c1c"))
+        elif is_late_plan:
+            style.add("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#fffbeb"))
+            style.add("TEXTCOLOR", (5, idx), (5, idx), colors.HexColor("#b45309"))
     table.setStyle(style)
     story.append(table)
-    doc.build(story)
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
     return buffer.getvalue()
 
 
