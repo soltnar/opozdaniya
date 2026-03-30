@@ -5,6 +5,7 @@ const downloadBtn = document.getElementById('download-btn');
 const downloadPdfBtn = document.getElementById('download-pdf-btn');
 const downloadLogLink = document.getElementById('download-log-link');
 const runIndicatorEl = document.getElementById('run-indicator');
+const runIndicatorInlineEl = document.getElementById('run-indicator-inline');
 const restaurantFilterEl = document.getElementById('restaurant-filter');
 const sortFilterEl = document.getElementById('sort-filter');
 const statusEl = document.getElementById('status');
@@ -48,6 +49,9 @@ function setRunningUi(isRunning) {
   stopBtn.disabled = !isRunning;
   if (runIndicatorEl) {
     runIndicatorEl.classList.toggle('hidden', !isRunning);
+  }
+  if (runIndicatorInlineEl) {
+    runIndicatorInlineEl.classList.toggle('hidden', !isRunning);
   }
   if (isRunning) {
     downloadBtn.disabled = true;
@@ -584,6 +588,7 @@ async function runExport() {
 
   runBtn.disabled = true;
   stopBtn.disabled = false;
+  setRunningUi(true);
   resultEl.textContent = '';
   logOffset = 0;
   downloadBtn.disabled = true;

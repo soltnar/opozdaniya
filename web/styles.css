@@ -83,6 +83,18 @@ h1, h2 { margin: 0 0 8px; }
 
 .controls label { display: block; margin-bottom: 6px; font-weight: 600; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.controls .row { align-items: center; }
+.controls .row.primary {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) auto auto;
+  gap: 8px;
+}
+.controls .row.filters {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 1fr);
+  gap: 8px;
+}
 
 input[type="date"],
 select {
@@ -118,26 +130,7 @@ button.danger { background: #b91c1c; color: #fff; }
 .result { margin-top: 8px; font-size: 14px; }
 .result a { color: var(--accent); }
 
-.logs-head { display: flex; justify-content: space-between; align-items: center; }
-.logs-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .hidden { display: none; }
-#log-box {
-  margin: 10px 0 0;
-  min-height: 360px;
-  max-height: 65vh;
-  overflow: auto;
-  background: #0f172a;
-  color: #d1fae5;
-  border-radius: 10px;
-  padding: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
-}
 
 .analytics-head {
   display: flex;
@@ -291,8 +284,11 @@ tr.late-row td {
 
 @media (max-width: 640px) {
   .layout { margin: 12px auto; }
-  #log-box { min-height: 280px; }
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .analytics-grid { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 1fr; }
+  .controls .row.primary,
+  .controls .row.filters {
+    grid-template-columns: 1fr;
+  }
 }

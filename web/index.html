@@ -23,12 +23,12 @@
 
     <section class="panel controls">
       <label for="scan-date">Дата сканирования</label>
-      <div class="row">
+      <div class="row primary">
         <input id="scan-date" type="date" />
         <button id="run-btn" type="button">Запустить</button>
         <button id="stop-btn" type="button" class="danger" disabled>Остановить</button>
       </div>
-      <div class="row">
+      <div class="row filters">
         <select id="restaurant-filter">
           <option value="">Все рестораны</option>
         </select>
@@ -43,6 +43,10 @@
       <div class="status-row">
         <span>Статус:</span>
         <strong id="status">IDLE</strong>
+        <div id="run-indicator-inline" class="run-indicator hidden" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Выполняется...</span>
+        </div>
       </div>
       <div class="row">
         <button id="download-btn" type="button" class="ghost" disabled>Скачать Excel</button>

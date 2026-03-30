@@ -1599,19 +1599,26 @@ def build_history_payload(
         list(DEFAULT_HISTORY_ACTIONS),
     ):
         raise RuntimeError("Некорректный шаблон истории: поле Действие не найдено")
-    actions = get_record_field(filter_record, "Действие")
-    if isinstance(actions, list):
-        if "Изменение статуса заказа" not in actions:
-            actions.append("Изменение статуса заказа")
-    else:
-        set_record_field(filter_record, "Действие", list(DEFAULT_HISTORY_ACTIONS))
-
     upsert_record_field(
         filter_record,
         "Объект",
         {"n": "Массив", "t": "Строка"},
         list(DEFAULT_HISTORY_OBJECTS),
     )
+
+    history_filter_mode = str(getattr(template, "_history_filter_mode", "strict") or "strict")
+    if history_filter_mode == "action_simple":
+        set_record_field(filter_record, "Действие", ["Изменение", "Изменение статуса заказа"])
+    elif history_filter_mode == "no_action_object":
+        set_record_field(filter_record, "Действие", None)
+        set_record_field(filter_record, "Объект", None)
+    else:
+        actions = get_record_field(filter_record, "Действие")
+        if isinstance(actions, list):
+            if "Изменение статуса заказа" not in actions:
+                actions.append("Изменение статуса заказа")
+        else:
+            set_record_field(filter_record, "Действие", list(DEFAULT_HISTORY_ACTIONS))
 
     if not upsert_record_field(filter_record, "GUID", "Строка", sale_key):
         raise RuntimeError("Некорректный шаблон истории: поле GUID не найдено")
@@ -2062,6 +2069,31 @@ def fetch_order_status_history(
             )
             return statuses
         events = extract_recordset_rows(result)
+
+        if not events and page_number == 1:
+            current_mode = str(getattr(template, "_history_filter_mode", "strict") or "strict")
+            if current_mode == "strict":
+                for retry_mode in ("action_simple", "no_action_object"):
+                    try:
+                        setattr(template, "_history_filter_mode", retry_mode)
+                        retry_payload = build_history_payload(
+                            template,
+                            sale_id=sale_id,
+                            sale_key=sale_key,
+                            limit=history_page_limit,
+                            position=position,
+                        )
+                        retry_result = call_history_with_auto_method(client, template, retry_payload)
+                        retry_events = extract_recordset_rows(retry_result)
+                        if retry_events:
+                            print(f"Автоподбор history-фильтра: mode={retry_mode}")
+                            events = retry_events
+                            result = retry_result
+                            break
+                    except Exception:
+                        continue
+                if not events:
+                    setattr(template, "_history_filter_mode", "strict")
 
         if not events:
             break
