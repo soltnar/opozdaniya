@@ -343,6 +343,7 @@ def make_default_sale_payload_template() -> dict[str, Any]:
                 "_type": "recordset",
                 "f": 0,
             },
+            "ДопПоля": ["RelatedSales", "Reglament"],
         },
     }
 
@@ -1462,7 +1463,7 @@ def build_sale_payload(
     mode = signature_mode if signature_mode in {"full", "no_sort", "filter_only"} else "full"
     filter_only_record = filter_record
     if mode == "full":
-        # Строгая /3-сигнатура: оставляем только Фильтр + Навигация + Сортировка.
+        # Строгая full-сигнатура: Фильтр + Навигация + Сортировка (+ ДопПоля, если требуется контуром).
         params_keys_snapshot = dict(params)
         params.clear()
         params["Фильтр"] = filter_only_record
@@ -1477,6 +1478,8 @@ def build_sale_payload(
             limit,
             position,
         )
+        if "ДопПоля" in params_keys_snapshot:
+            params["ДопПоля"] = copy.deepcopy(params_keys_snapshot.get("ДопПоля"))
     elif mode == "no_sort":
         # Строгая /2-сигнатура: оставляем только Фильтр + Навигация.
         nav_template = params.get("Навигация")

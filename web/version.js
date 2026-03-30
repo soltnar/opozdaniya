@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.88",
+  version: "2026.03.30-web.89",
   updatedAt: "2026-03-30",
-  notes: "Windows runtime stability: ignore empty conservative runtime context and handle 401 auth without false method-signature failure"
+  notes: "SaleOrder.List contour fix: full signature now includes ДопПоля (/4), matching Windows HAR runtime"
 };
