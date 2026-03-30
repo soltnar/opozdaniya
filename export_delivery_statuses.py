@@ -425,26 +425,42 @@ def copy_record_field(dst_record: dict[str, Any], src_record: dict[str, Any], fi
 def merge_runtime_filter_context(
     template_payload: dict[str, Any],
     runtime_payload: dict[str, Any],
+    *,
+    conservative: bool = False,
 ) -> int:
     template_filter = template_payload.get("params", {}).get("Фильтр")
     runtime_filter = runtime_payload.get("params", {}).get("Фильтр")
     if not isinstance(template_filter, dict) or not isinstance(runtime_filter, dict):
         return 0
 
-    fields_to_copy = (
-        "CRMFilter",
-        "Company",
-        "OurOrgFilter",
-        "Sales",
-        "SalesPoints",
-        "Workplaces",
-        "Warehouses",
-        "ProductStateFields",
-        "NotFields",
-        "NameLength",
-        "ShowMiniPaymentsJSON",
-        "ShowSaleNomenclature",
-    )
+    if conservative:
+        # Консервативный режим для fallback, когда ProductStateId=Done не пойман:
+        # не переносим потенциально "узкие" орг/точечные фильтры (Sales и т.п.),
+        # чтобы не получить пустую выборку.
+        fields_to_copy = (
+            "Company",
+            "OurOrgFilter",
+            "ProductStateFields",
+            "NotFields",
+            "NameLength",
+            "ShowMiniPaymentsJSON",
+            "ShowSaleNomenclature",
+        )
+    else:
+        fields_to_copy = (
+            "CRMFilter",
+            "Company",
+            "OurOrgFilter",
+            "Sales",
+            "SalesPoints",
+            "Workplaces",
+            "Warehouses",
+            "ProductStateFields",
+            "NotFields",
+            "NameLength",
+            "ShowMiniPaymentsJSON",
+            "ShowSaleNomenclature",
+        )
 
     applied = 0
     for field_name in fields_to_copy:
@@ -1003,6 +1019,7 @@ def apply_runtime_sale_meta(
             merged_fields = merge_runtime_filter_context(
                 templates.sale_payload_template,
                 runtime_sale_payload,
+                conservative=False,
             )
             print("Runtime-контекст: найден запрос ProductStateId=Done.")
             print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
@@ -1015,10 +1032,11 @@ def apply_runtime_sale_meta(
             merged_fields = merge_runtime_filter_context(
                 templates.sale_payload_template,
                 runtime_sale_payload,
+                conservative=True,
             )
             print(
                 "Runtime-контекст: запрос ProductStateId=Done не найден, "
-                "взял контекст фильтров из ближайшего SaleOrder.List."
+                "взял консервативный контекст фильтров из ближайшего SaleOrder.List."
             )
             print(f"Runtime-контекст: перенесено полей фильтра: {merged_fields}")
     else:
@@ -1220,6 +1238,10 @@ def build_sale_payload(
         # Снимаем возможный контекст CRM-фильтра (часто ограничивает до "своей" части заказов).
         if not remove_record_field(filter_record, "CRMFilter"):
             set_record_field(filter_record, "CRMFilter", None)
+        # В fallback-режиме это наиболее частая причина пустой выборки.
+        for field_name in ("Sales", "SalesPoints", "Workplaces", "Warehouses"):
+            if not remove_record_field(filter_record, field_name):
+                set_record_field(filter_record, field_name, None)
     if context_relax_level >= 2:
         # Дополнительно ослабляем контекст номенклатуры/полей для получения полного среза.
         for field_name in ("SaleNomenclatureFilter", "NotFields", "ProductStateFields"):
@@ -2322,7 +2344,7 @@ def main() -> int:
         print(f"HAR шаблон: {har_path}")
     else:
         print("HAR шаблон: не используется (runtime fallback)")
-        if har_error:
+        if har_error and args.har:
             print(f"Предупреждение HAR: {har_error}")
     print(f"Профиль браузера: {profile_dir}")
 
@@ -2477,6 +2499,47 @@ def main() -> int:
                         "UI-счетчик не используется для автоподбора фильтров: "
                         "runtime Done-запрос не пойман (строгий HAR-режим)."
                     )
+
+                if not orders and heuristic_fallback_enabled:
+                    print(
+                        "Базовая выборка вернула 0 заказов. Пробую авто-ослабление фильтров fallback..."
+                    )
+                    zero_retry_variants: list[tuple[int, str, str]] = [
+                        (1, "keep", "context_relax=1"),
+                        (2, "keep", "context_relax=2"),
+                        (1, "no_ourorg", "context_relax=1, scope=no_ourorg"),
+                        (1, "no_company", "context_relax=1, scope=no_company"),
+                        (1, "no_org_scope", "context_relax=1, scope=no_org_scope"),
+                        (2, "no_org_scope", "context_relax=2, scope=no_org_scope"),
+                    ]
+                    best_orders = orders
+                    best_label = "base"
+                    for relax_level, scope_mode, label in zero_retry_variants:
+                        try:
+                            probe_orders = fetch_done_orders(
+                                client=client,
+                                template=templates,
+                                target_date=target_date,
+                                page_limit=int(args.order_page_limit),
+                                max_pages=args.max_order_pages,
+                                reglament_override=template_reglament if isinstance(template_reglament, int) else None,
+                                clear_reglament=template_reglament is None,
+                                verbose=False,
+                                context_relax_level=relax_level,
+                                scope_relax_mode=scope_mode,
+                            )
+                            print(f"Вариант {label}: найдено {len(probe_orders)}")
+                            if len(probe_orders) > len(best_orders):
+                                best_orders = probe_orders
+                                best_label = label
+                        except Exception as err:  # noqa: BLE001
+                            print(f"Вариант {label}: ошибка ({err})")
+
+                    if best_orders:
+                        orders = best_orders
+                        print(
+                            f"Выбран fallback-вариант {best_label}: найдено {len(orders)}"
+                        )
 
                 if ui_done_count is not None and ui_alignment_allowed:
                     diff = abs(len(orders) - ui_done_count)
