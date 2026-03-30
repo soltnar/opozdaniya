@@ -361,6 +361,13 @@
   - помимо фиксированных имен теперь ищутся любые `*.har` в папках запуска, Desktop и Downloads,
   - добавлен приоритет delivery-файлов (`dost`/`delivery`) и `rest.saby.ru`.
 
+## 2026-03-30-web.74
+- Исправлен критичный сбой runtime-capture на Windows:
+  - `Page.reload: Timeout ...` больше не валит выполнение,
+  - `goto/reload` в `capture_runtime_service_meta` переведены в timeout-safe режим.
+- Добавлен hard-fallback:
+  - если runtime-capture падает (включая повторный), скрипт продолжает работу с универсальным runtime-шаблоном, а не завершается с code 1.
+
 ## 2026-03-30-web.73
 - Исправлен кейс `Найдено заказов: 0` в режиме без HAR:
   - при `Runtime Done-запрос не пойман` перенос runtime-контекста теперь консервативный (без узких `Sales/SalesPoints/Workplaces/Warehouses`),

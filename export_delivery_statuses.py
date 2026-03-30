@@ -836,6 +836,9 @@ def capture_runtime_service_meta(
         msg = str(err)
         return "Target page, context or browser has been closed" in msg
 
+    def _is_timeout_error(err: Exception) -> bool:
+        return "Timeout" in str(err)
+
     def handle_request(request: Any) -> None:
         if request.method != "POST":
             return
@@ -891,7 +894,13 @@ def capture_runtime_service_meta(
             try:
                 if page.is_closed():
                     page = browser_context.new_page()
-                page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                try:
+                    page.goto(DELIVERY_URL, wait_until="domcontentloaded", timeout=12_000)
+                except Exception as err:  # noqa: BLE001
+                    # В ряде окружений Win10 DOM может грузиться дольше, чем timeout.
+                    # Продолжаем, если страница фактически уже открыта.
+                    if not _is_timeout_error(err):
+                        raise
                 page.wait_for_timeout(700)
                 # Принудительно активируем "Выполнен", чтобы runtime SaleOrder.List
                 # был из нужного delivery-контекста.
@@ -900,7 +909,12 @@ def capture_runtime_service_meta(
                     page.wait_for_timeout(800)
                 except Exception:  # noqa: BLE001
                     pass
-                page.reload(wait_until="domcontentloaded")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=8_000)
+                except Exception as err:  # noqa: BLE001
+                    # Не считаем reload обязательным шагом; его timeout не должен валить запуск.
+                    if not _is_timeout_error(err):
+                        raise
                 break
             except Exception as err:  # noqa: BLE001
                 if not _is_target_closed_error(err):
@@ -922,14 +936,22 @@ def capture_runtime_service_meta(
             try:
                 if page.is_closed():
                     page = browser_context.new_page()
-                    page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                    try:
+                        page.goto(DELIVERY_URL, wait_until="domcontentloaded", timeout=12_000)
+                    except Exception as err:  # noqa: BLE001
+                        if not _is_timeout_error(err):
+                            raise
                 page.wait_for_timeout(250)
             except Exception as err:  # noqa: BLE001
-                if not _is_target_closed_error(err):
+                if not _is_target_closed_error(err) and not _is_timeout_error(err):
                     raise
                 try:
                     page = browser_context.new_page()
-                    page.goto(DELIVERY_URL, wait_until="domcontentloaded")
+                    try:
+                        page.goto(DELIVERY_URL, wait_until="domcontentloaded", timeout=12_000)
+                    except Exception as goto_err:  # noqa: BLE001
+                        if not _is_timeout_error(goto_err):
+                            raise
                 except Exception:  # noqa: BLE001
                     break
     finally:
@@ -2360,13 +2382,21 @@ def main() -> int:
             page = context.pages[0] if context.pages else context.new_page()
             ensure_logged_in(page)
 
-            (
-                runtime_service_url,
-                runtime_headers,
-                runtime_sale_payload,
-                runtime_sale_called_method,
-                runtime_sale_is_done,
-            ) = capture_runtime_service_meta(page)
+            try:
+                (
+                    runtime_service_url,
+                    runtime_headers,
+                    runtime_sale_payload,
+                    runtime_sale_called_method,
+                    runtime_sale_is_done,
+                ) = capture_runtime_service_meta(page)
+            except Exception as err:  # noqa: BLE001
+                print(f"Предупреждение: runtime-capture не удался ({err}). Продолжаю в универсальном runtime-режиме.")
+                runtime_service_url = None
+                runtime_headers = {}
+                runtime_sale_payload = None
+                runtime_sale_called_method = None
+                runtime_sale_is_done = False
             if templates is None:
                 templates = make_runtime_fallback_templates(
                     runtime_sale_payload=runtime_sale_payload,
@@ -2417,13 +2447,24 @@ def main() -> int:
                 print(
                     "Автовосстановление: переполучаю runtime-параметры реестра после ошибки метода..."
                 )
-                (
-                    runtime_service_url,
-                    runtime_headers,
-                    runtime_sale_payload,
-                    runtime_sale_called_method,
-                    runtime_sale_is_done,
-                ) = capture_runtime_service_meta(page, timeout_seconds=35)
+                try:
+                    (
+                        runtime_service_url,
+                        runtime_headers,
+                        runtime_sale_payload,
+                        runtime_sale_called_method,
+                        runtime_sale_is_done,
+                    ) = capture_runtime_service_meta(page, timeout_seconds=35)
+                except Exception as recapture_err:  # noqa: BLE001
+                    print(
+                        "Предупреждение: повторный runtime-capture не удался "
+                        f"({recapture_err}). Продолжаю с текущим универсальным шаблоном."
+                    )
+                    runtime_service_url = None
+                    runtime_headers = {}
+                    runtime_sale_payload = None
+                    runtime_sale_called_method = None
+                    runtime_sale_is_done = False
                 apply_runtime_sale_meta(
                     templates=templates,
                     runtime_sale_payload=runtime_sale_payload,
