@@ -222,7 +222,7 @@ def run_embedded_worker(date_value: str) -> int:
     import export_delivery_statuses  # noqa: PLC0415
 
     saved_argv = list(sys.argv)
-    sys.argv = ["export_delivery_statuses.py", "--date", date_value]
+    sys.argv = ["export_delivery_statuses.py", "--date", date_value, "--non-interactive"]
     try:
         try:
             result = export_delivery_statuses.main()

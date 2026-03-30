@@ -225,6 +225,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Включить подгонку состава заказов под UI-счетчик 'Выполнен/Отмечено' (по умолчанию отключено)",
     )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Не запрашивать ручной ввод в консоли (для web/worker-режима)",
+    )
     return parser.parse_args()
 
 
@@ -769,6 +774,7 @@ def wait_until_service_ready(
     template: TemplateBundle,
     target_date: date,
     page: Page,
+    non_interactive: bool = False,
 ) -> SabyRpcClient:
     position = build_position_record(
         template.sale_position_field,
@@ -817,6 +823,16 @@ def wait_until_service_ready(
                 and ("не найден" in msg or "not found" in msg or "недоступен" in msg)
             )
         ]
+        # Часть контуров возвращает generic "Method not found" без имени метода.
+        generic_method_errors = [
+            msg
+            for msg in errors
+            if (
+                "method not found" in msg.lower()
+                or ("метод " in msg.lower() and "не найден" in msg.lower())
+            )
+        ]
+        method_errors.extend(generic_method_errors)
         if method_errors:
             raise RuntimeError(
                 "Сервер отклонил метод SaleOrder.List (ошибка метода/сигнатуры). "
@@ -839,7 +855,7 @@ def wait_until_service_ready(
         print("Последние ошибки API:")
         for idx, msg in enumerate(errors, start=1):
             print(f"  {idx}. {msg}")
-        if sys.stdin is not None and sys.stdin.isatty():
+        if (not non_interactive) and sys.stdin is not None and sys.stdin.isatty():
             print("Введите пароль/подтвердите вход в окне браузера и нажмите Enter.")
             try:
                 input()
@@ -1648,26 +1664,49 @@ def call_history_with_auto_method(
 ) -> dict[str, Any]:
     last_err: Exception | None = None
     variants = history_method_variants(template, payload)
-    for called_method, body_method in variants:
-        trial_payload = copy.deepcopy(payload)
-        trial_payload["method"] = body_method
-        try:
-            result = client.call(trial_payload, called_method)
-            if called_method != template.history_called_method or body_method != str(
-                template.history_payload_template.get("method")
-            ):
-                print(
-                    "Автоподбор history-метода: "
-                    f"header={called_method}, body={body_method}"
-                )
-            template.history_called_method = called_method
-            template.history_payload_template["method"] = body_method
-            return result
-        except Exception as err:  # noqa: BLE001
-            last_err = err
-            if not is_history_method_not_found_error(str(err)):
-                raise
+    service_urls: list[str] = []
+    for candidate in (client._service_url, template.service_url, DEFAULT_SERVICE_URL):
+        cand = str(candidate or "").strip()
+        if not cand:
             continue
+        if cand not in service_urls:
+            service_urls.append(cand)
+        try:
+            parsed = urlparse(cand)
+            stripped = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if stripped and stripped not in service_urls:
+                service_urls.append(stripped)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for svc_url in service_urls:
+        svc_client = client if svc_url == client._service_url else SabyRpcClient(
+            client._context,
+            svc_url,
+            client._base_headers,
+        )
+        for called_method, body_method in variants:
+            trial_payload = copy.deepcopy(payload)
+            trial_payload["method"] = body_method
+            try:
+                result = svc_client.call(trial_payload, called_method)
+                if (
+                    called_method != template.history_called_method
+                    or body_method != str(template.history_payload_template.get("method"))
+                    or svc_url != client._service_url
+                ):
+                    print(
+                        "Автоподбор history: "
+                        f"url={svc_url}, header={called_method}, body={body_method}"
+                    )
+                template.history_called_method = called_method
+                template.history_payload_template["method"] = body_method
+                return result
+            except Exception as err:  # noqa: BLE001
+                last_err = err
+                if not is_history_method_not_found_error(str(err)):
+                    raise
+                continue
 
     if last_err is not None:
         raise last_err
@@ -1681,6 +1720,9 @@ def fetch_order_status_history(
     history_page_limit: int,
     max_history_pages: int | None,
 ) -> list[dict[str, Any]]:
+    if bool(getattr(template, "_history_unavailable", False)):
+        return []
+
     sale_id = order.get("Sale")
     sale_key = order.get("Key")
     if not isinstance(sale_id, int) or not isinstance(sale_key, str):
@@ -1704,6 +1746,14 @@ def fetch_order_status_history(
         try:
             result = call_history_with_auto_method(client, template, payload)
         except Exception as err:  # noqa: BLE001
+            if is_history_method_not_found_error(str(err)):
+                setattr(template, "_history_unavailable", True)
+                if not bool(getattr(template, "_history_unavailable_reported", False)):
+                    print(
+                        "Предупреждение: history-метод недоступен в текущем контуре API. "
+                        "История статусов будет пропущена для оставшихся заказов."
+                    )
+                    setattr(template, "_history_unavailable_reported", True)
             print(
                 f"Предупреждение: не удалось загрузить history для заказа {sale_id} ({order.get('Number')}): {err}"
             )
@@ -2467,6 +2517,7 @@ def main() -> int:
                     template=templates,
                     target_date=target_date,
                     page=page,
+                    non_interactive=bool(args.non_interactive),
                 )
             except RuntimeError as err:
                 msg = str(err)
@@ -2513,6 +2564,7 @@ def main() -> int:
                     template=templates,
                     target_date=target_date,
                     page=page,
+                    non_interactive=bool(args.non_interactive),
                 )
 
             ui_done_count: int | None = None
@@ -2840,6 +2892,11 @@ def main() -> int:
 
             all_statuses: list[dict[str, Any]] = []
             for index, order in enumerate(orders, start=1):
+                if bool(getattr(templates, "_history_unavailable", False)):
+                    print(
+                        "История статусов недоступна: пропускаю оставшиеся заказы."
+                    )
+                    break
                 sale_id = order.get("Sale")
                 number = order.get("Number")
                 print(f"[history] {index}/{len(orders)} sale={sale_id} number={number}")
