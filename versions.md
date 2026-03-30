@@ -526,3 +526,8 @@
   - повтор выполняется с новым профилем (`.saby_profile_runs/clean_<job_id>`), без ручной очистки кэша пользователем.
 - Для single-exe worker (`--worker`) добавлен проброс `--profile-dir` во встроенный экспортный раннер,
   чтобы clean-profile ретрай работал одинаково для всех сборок Windows.
+
+## 2026-03-30-web.83
+- Исправлен критический баг Windows single-exe:
+  - в `webui_server` исправлено имя аргумента при вызове `run_embedded_worker(...)`,
+  - устранена ошибка `TypeError: run_embedded_worker() got an unexpected keyword argument 'profile_override'`.

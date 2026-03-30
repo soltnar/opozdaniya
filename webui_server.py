@@ -1620,7 +1620,7 @@ def main() -> int:
             profile_override = str(sys.argv[pidx + 1]).strip() or None
         except Exception:
             profile_override = None
-        return run_embedded_worker(str(date_value), profile_override=profile_override)
+        return run_embedded_worker(str(date_value), profile_dir_override=profile_override)
 
     worker_exe = Path(sys.executable).resolve().with_name("export_delivery_statuses.exe")
     if not WEB_DIR.exists():

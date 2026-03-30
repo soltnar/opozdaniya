@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.30-web.82",
+  version: "2026.03.30-web.83",
   updatedAt: "2026-03-30",
-  notes: "Runtime capture hardened, history /1-/2 fallback, and auto clean-profile retry on method/signature failures"
+  notes: "Fixed worker argument mismatch for clean-profile retry in Windows single-exe mode"
 };
