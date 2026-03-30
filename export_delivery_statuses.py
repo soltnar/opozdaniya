@@ -2023,6 +2023,8 @@ def fetch_order_status_history(
 
     statuses: list[dict[str, Any]] = []
     seen_events: set[tuple[Any, Any, Any]] = set()
+    raw_events_count = 0
+    status_hint_messages = 0
 
     position: dict[str, Any] | None = None
     page_number = 0
@@ -2056,8 +2058,12 @@ def fetch_order_status_history(
         if not events:
             break
 
+        raw_events_count += len(events)
         for event in events:
             message = pick_event_message(event)
+            message_text = str(message or "")
+            if "статус" in message_text.lower():
+                status_hint_messages += 1
             event_key = (
                 event.get("_event_id"),
                 event.get("_time"),
@@ -2117,6 +2123,16 @@ def fetch_order_status_history(
             break
 
         position = next_position
+
+    if raw_events_count > 0 and not statuses:
+        warn_count = int(getattr(template, "_history_parse_warn_count", 0) or 0)
+        if warn_count < 12:
+            print(
+                "[history-debug] заказ "
+                f"{sale_id} ({order.get('Number')}): events={raw_events_count}, "
+                f"messages_with_status_word={status_hint_messages}, parsed_transitions=0"
+            )
+            setattr(template, "_history_parse_warn_count", warn_count + 1)
 
     return statuses
 
