@@ -1026,9 +1026,7 @@ def _ensure_pdf_font() -> str:
 
 def _list_restaurants(file_path: Path) -> list[str]:
     wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
-    if "Реестр" not in wb.sheetnames:
-        return []
-    rows = _sheet_dict_rows(wb["Реестр"])
+    rows = _sheet_dict_rows(wb["Реестр"]) if "Реестр" in wb.sheetnames else []
     names = set()
     for row in rows:
         name = (
@@ -1036,11 +1034,23 @@ def _list_restaurants(file_path: Path) -> list[str]:
             or row.get("CompanyName")
             or row.get("RealCompanyName")
             or row.get("OriginCompanyName")
+            or row.get("SalesPointName")
             or ""
         )
         text = str(name).strip()
         if text:
             names.add(text)
+
+    if not names:
+        try:
+            payload = build_analytics_payload(file_path, restaurant_filter=None, sort_mode="restaurant_asc")
+            for item in payload.get("restaurant_totals") or []:
+                text = str(item.get("restaurant") or "").strip()
+                if text:
+                    names.add(text)
+        except Exception:
+            pass
+
     return sorted(names)
 
 
