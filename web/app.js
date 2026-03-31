@@ -6,6 +6,8 @@ const downloadPdfBtn = document.getElementById('download-pdf-btn');
 const downloadLogLink = document.getElementById('download-log-link');
 const runIndicatorEl = document.getElementById('run-indicator');
 const runIndicatorInlineEl = document.getElementById('run-indicator-inline');
+const runIndicatorTextEl = document.getElementById('run-indicator-text');
+const runIndicatorInlineTextEl = document.getElementById('run-indicator-inline-text');
 const restaurantFilterEl = document.getElementById('restaurant-filter');
 const sortFilterEl = document.getElementById('sort-filter');
 const statusEl = document.getElementById('status');
@@ -28,8 +30,10 @@ let activeJobId = null;
 let pollTimer = null;
 let logOffset = 0;
 let currentAnalyticsDate = null;
+let progressCurrent = 0;
+let progressTotal = 0;
 const SELECTED_DATE_KEY = 'saby_selected_date';
-const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurant';
+const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurants';
 const SELECTED_SORT_KEY = 'saby_selected_sort';
 
 function todayIso() {
@@ -56,6 +60,9 @@ function setRunningUi(isRunning) {
   if (isRunning) {
     downloadBtn.disabled = true;
     downloadPdfBtn.disabled = true;
+    setProgressText('Идет выполнение...');
+  } else {
+    setProgressText('Выполняется...');
   }
 }
 
@@ -76,7 +83,44 @@ function updateLogLink() {
   downloadLogLink.setAttribute('href', '#');
 }
 
-function appendLogs(_) {}
+function setProgressText(text) {
+  if (runIndicatorTextEl) runIndicatorTextEl.textContent = text;
+  if (runIndicatorInlineTextEl) runIndicatorInlineTextEl.textContent = text;
+}
+
+function renderProgress() {
+  if (progressCurrent > 0 && progressTotal > 0) {
+    const pct = Math.min(100, Math.max(0, Math.round((progressCurrent / progressTotal) * 100)));
+    setProgressText(`Идет выполнение... ${progressCurrent}/${progressTotal} (${pct}%)`);
+    return;
+  }
+  if (progressTotal > 0) {
+    setProgressText(`Идет выполнение... 0/${progressTotal} (0%)`);
+    return;
+  }
+  setProgressText('Идет выполнение...');
+}
+
+function updateProgressFromLine(line) {
+  const text = String(line || '');
+  const historyMatch = text.match(/\[history\]\s*(\d+)\s*\/\s*(\d+)/i);
+  if (historyMatch) {
+    progressCurrent = Math.max(progressCurrent, Number(historyMatch[1]) || 0);
+    progressTotal = Math.max(progressTotal, Number(historyMatch[2]) || 0);
+    renderProgress();
+    return;
+  }
+  const totalMatch = text.match(/Найдено заказов:\s*(\d+)/i);
+  if (totalMatch) {
+    progressTotal = Math.max(progressTotal, Number(totalMatch[1]) || 0);
+    renderProgress();
+  }
+}
+
+function appendLogs(lines) {
+  if (!Array.isArray(lines) || !lines.length) return;
+  lines.forEach((line) => updateProgressFromLine(line));
+}
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -125,8 +169,18 @@ function resetAnalyticsUi() {
   downloadPdfBtn.disabled = true;
 }
 
-function selectedRestaurant() {
-  return String(restaurantFilterEl?.value || '').trim();
+function selectedRestaurants() {
+  if (!restaurantFilterEl) return [];
+  return Array.from(restaurantFilterEl.selectedOptions || [])
+    .map((opt) => String(opt.value || '').trim())
+    .filter(Boolean);
+}
+
+function selectedRestaurantCaption() {
+  const selected = selectedRestaurants();
+  if (!selected.length) return 'Все рестораны';
+  if (selected.length <= 3) return selected.join(', ');
+  return `${selected.slice(0, 3).join(', ')} +${selected.length - 3}`;
 }
 
 function selectedSort() {
@@ -406,17 +460,27 @@ function renderOrders(rows, thresholds) {
 async function loadRestaurantsForDate(dateValue) {
   const date = String(dateValue || '').trim();
   if (!date) return;
-  const current = selectedRestaurant();
+  const current = new Set(selectedRestaurants());
   try {
     const payload = await api(`/api/restaurants?date=${encodeURIComponent(date)}`);
     const list = Array.isArray(payload.restaurants) ? payload.restaurants : [];
-    const preferred = localStorage.getItem(SELECTED_RESTAURANT_KEY) || current || '';
-    const nextValue = list.includes(preferred) ? preferred : '';
-    restaurantFilterEl.innerHTML = [
-      '<option value="">Все рестораны</option>',
-      ...list.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`),
-    ].join('');
-    restaurantFilterEl.value = nextValue;
+    const rawSaved = localStorage.getItem(SELECTED_RESTAURANT_KEY);
+    let preferred = [];
+    if (rawSaved) {
+      try {
+        const parsed = JSON.parse(rawSaved);
+        if (Array.isArray(parsed)) preferred = parsed.map((x) => String(x || '').trim()).filter(Boolean);
+      } catch (_) {
+        preferred = [String(rawSaved || '').trim()].filter(Boolean);
+      }
+    }
+    const selectedSet = current.size ? current : new Set(preferred);
+    restaurantFilterEl.innerHTML = list
+      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+      .join('');
+    Array.from(restaurantFilterEl.options).forEach((opt) => {
+      opt.selected = selectedSet.has(String(opt.value || '').trim());
+    });
   } catch (err) {
     console.warn(`[web] Список ресторанов недоступен: ${err.message}`);
   }
@@ -425,7 +489,7 @@ async function loadRestaurantsForDate(dateValue) {
 function renderAnalytics(data) {
   analyticsPanel.classList.remove('hidden');
   currentAnalyticsDate = data.date || null;
-  const restaurantCaption = data.restaurant_filter || selectedRestaurant() || 'Все рестораны';
+  const restaurantCaption = data.restaurant_filter_caption || selectedRestaurantCaption();
   const sortCaptionMap = {
     restaurant_asc: 'ресторан A→Я',
     restaurant_desc: 'ресторан Я→A',
@@ -474,7 +538,7 @@ function renderAnalytics(data) {
 
 async function loadAnalytics(options = {}) {
   const selectedDate = String(dateInput.value || '').trim();
-  const restaurant = selectedRestaurant();
+  const restaurants = selectedRestaurants();
   const sort = selectedSort();
   const useSelectedDate = Boolean(options.useSelectedDate) && Boolean(selectedDate);
   if (!activeJobId && !useSelectedDate) return false;
@@ -485,9 +549,7 @@ async function loadAnalytics(options = {}) {
     } else {
       params.set('job_id', String(activeJobId));
     }
-    if (restaurant) {
-      params.set('restaurant', restaurant);
-    }
+    restaurants.forEach((name) => params.append('restaurant', name));
     if (sort) {
       params.set('sort', sort);
     }
@@ -506,9 +568,7 @@ async function loadAnalytics(options = {}) {
       setStatus('SUCCESS', 'success');
       setRunningUi(false);
     }
-    if (restaurant) {
-      localStorage.setItem(SELECTED_RESTAURANT_KEY, restaurant);
-    }
+    localStorage.setItem(SELECTED_RESTAURANT_KEY, JSON.stringify(restaurants));
     if (sort) {
       localStorage.setItem(SELECTED_SORT_KEY, sort);
     }
@@ -591,6 +651,9 @@ async function runExport() {
   setRunningUi(true);
   resultEl.textContent = '';
   logOffset = 0;
+  progressCurrent = 0;
+  progressTotal = 0;
+  renderProgress();
   downloadBtn.disabled = true;
   resetAnalyticsUi();
   setStatus('RUNNING', 'running');
@@ -682,10 +745,8 @@ downloadBtn.addEventListener('click', () => {
   if (!date) return;
   const params = new URLSearchParams();
   params.set('date', date);
-  const restaurant = selectedRestaurant();
-  if (restaurant) {
-    params.set('restaurant', restaurant);
-  }
+  const restaurants = selectedRestaurants();
+  restaurants.forEach((name) => params.append('restaurant', name));
   const sort = selectedSort();
   if (sort) {
     params.set('sort', sort);
@@ -697,10 +758,8 @@ downloadPdfBtn.addEventListener('click', () => {
   if (!date) return;
   const params = new URLSearchParams();
   params.set('date', date);
-  const restaurant = selectedRestaurant();
-  if (restaurant) {
-    params.set('restaurant', restaurant);
-  }
+  const restaurants = selectedRestaurants();
+  restaurants.forEach((name) => params.append('restaurant', name));
   const sort = selectedSort();
   if (sort) {
     params.set('sort', sort);
@@ -720,12 +779,8 @@ dateInput.addEventListener('change', async () => {
   loadAnalytics({ useSelectedDate: true });
 });
 restaurantFilterEl.addEventListener('change', () => {
-  const restaurant = selectedRestaurant();
-  if (restaurant) {
-    localStorage.setItem(SELECTED_RESTAURANT_KEY, restaurant);
-  } else {
-    localStorage.removeItem(SELECTED_RESTAURANT_KEY);
-  }
+  const restaurants = selectedRestaurants();
+  localStorage.setItem(SELECTED_RESTAURANT_KEY, JSON.stringify(restaurants));
   if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
   loadAnalytics({ useSelectedDate: true });
 });

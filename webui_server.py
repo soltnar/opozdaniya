@@ -434,9 +434,41 @@ def _sort_orders(rows: list[dict], sort_mode: str | None) -> list[dict]:
     )
 
 
+def _normalize_restaurant_filters(
+    restaurant_filter: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    if restaurant_filter is None:
+        return []
+    values: list[str] = []
+    if isinstance(restaurant_filter, str):
+        values = [x.strip() for x in restaurant_filter.split(",")]
+    else:
+        for item in restaurant_filter:
+            values.extend([x.strip() for x in str(item or "").split(",")])
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        unique.append(value)
+    return unique
+
+
+def _restaurant_filter_caption(selected: list[str]) -> str:
+    if not selected:
+        return "Все рестораны"
+    if len(selected) <= 3:
+        return ", ".join(selected)
+    return f"{', '.join(selected[:3])} +{len(selected) - 3}"
+
+
 def build_analytics_payload(
     file_path: Path,
-    restaurant_filter: str | None = None,
+    restaurant_filter: str | list[str] | tuple[str, ...] | None = None,
     sort_mode: str | None = None,
 ) -> dict:
     wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
@@ -764,13 +796,13 @@ def build_analytics_payload(
             "max": max(values),
         }
 
-    restaurant_filter = (restaurant_filter or "").strip()
-    if restaurant_filter:
-        target = norm_status(restaurant_filter)
+    selected_restaurants = _normalize_restaurant_filters(restaurant_filter)
+    if selected_restaurants:
+        targets = {norm_status(x) for x in selected_restaurants}
         detailed_orders = [
             row
             for row in detailed_orders
-            if norm_status(row.get("restaurant")) == target
+            if norm_status(row.get("restaurant")) in targets
         ]
     detailed_orders = _sort_orders(detailed_orders, sort_mode)
 
@@ -934,7 +966,8 @@ def build_analytics_payload(
         },
         "load_by_hour": load_by_hour,
         "orders": detailed_orders,
-        "restaurant_filter": restaurant_filter or None,
+        "restaurant_filter": selected_restaurants or None,
+        "restaurant_filter_caption": _restaurant_filter_caption(selected_restaurants),
         "sort_mode": (sort_mode or "restaurant_asc"),
     }
 
@@ -1011,7 +1044,11 @@ def _list_restaurants(file_path: Path) -> list[str]:
     return sorted(names)
 
 
-def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
+def _build_pdf_report(
+    file_path: Path,
+    restaurant_filter: str | list[str] | tuple[str, ...] | None,
+    sort_mode: str | None,
+) -> bytes:
     payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
     restaurant_totals = payload.get("restaurant_totals") or []
@@ -1103,7 +1140,7 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
         canvas.restoreState()
 
     date_part = file_path.stem.replace("order_status_history_", "")
-    restaurant_part = restaurant_filter or "Все рестораны"
+    restaurant_part = _restaurant_filter_caption(_normalize_restaurant_filters(restaurant_filter))
     story.append(Paragraph(f"Отчет доставки за {date_part}", styles["Title"]))
     story.append(Paragraph(f"Ресторан: {restaurant_part}", styles["Normal"]))
     story.append(Paragraph("PDF адаптирован под ширину страницы: без обрезания колонок.", styles["Normal"]))
@@ -1352,7 +1389,11 @@ def _build_pdf_report(file_path: Path, restaurant_filter: str | None, sort_mode:
     return buffer.getvalue()
 
 
-def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mode: str | None) -> bytes:
+def _build_excel_report(
+    file_path: Path,
+    restaurant_filter: str | list[str] | tuple[str, ...] | None,
+    sort_mode: str | None,
+) -> bytes:
     payload = build_analytics_payload(file_path, restaurant_filter=restaurant_filter, sort_mode=sort_mode)
     rows = payload.get("orders") or []
     restaurant_totals = payload.get("restaurant_totals") or []
@@ -1364,7 +1405,7 @@ def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mod
     ws_kpi.title = "Сводка"
     ws_kpi.append(["Показатель", "Значение"])
     ws_kpi.append(["Дата", file_path.stem.replace("order_status_history_", "")])
-    ws_kpi.append(["Ресторан", restaurant_filter or "Все рестораны"])
+    ws_kpi.append(["Ресторан", _restaurant_filter_caption(_normalize_restaurant_filters(restaurant_filter))])
     ws_kpi.append(["Сортировка", sort_mode or "restaurant_asc"])
     ws_kpi.append(["Заказов", kpi.get("orders")])
     ws_kpi.append(["Опозданий > 60 мин", kpi.get("overdue_count")])
@@ -1496,6 +1537,13 @@ def _build_excel_report(file_path: Path, restaurant_filter: str | None, sort_mod
     return out.getvalue()
 
 
+def _query_restaurant_filters(qs: dict[str, list[str]]) -> list[str]:
+    values = qs.get("restaurant", [])
+    if not values:
+        return []
+    return _normalize_restaurant_filters([str(x or "") for x in values])
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         return
@@ -1609,12 +1657,10 @@ class Handler(BaseHTTPRequestHandler):
             if requested_id is not None:
                 requested_id = str(requested_id).strip() or None
             requested_date = (qs.get("date", [None])[0] or None)
-            restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            restaurant_filter = _query_restaurant_filters(qs)
             sort_mode = (qs.get("sort", [None])[0] or None)
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
-            if restaurant_filter is not None:
-                restaurant_filter = str(restaurant_filter).strip() or None
             if sort_mode is not None:
                 sort_mode = str(sort_mode).strip() or None
 
@@ -1647,7 +1693,7 @@ class Handler(BaseHTTPRequestHandler):
 
             suffix = requested_date or "latest"
             if restaurant_filter:
-                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", restaurant_filter)[:40]
+                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
                 suffix = f"{suffix}_{safe_name}"
             filename = f"delivery_report_{suffix}.xlsx"
             self.send_response(200)
@@ -1737,12 +1783,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/report_pdf":
             qs = parse_qs(parsed.query)
             requested_date = (qs.get("date", [None])[0] or None)
-            restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            restaurant_filter = _query_restaurant_filters(qs)
             sort_mode = (qs.get("sort", [None])[0] or None)
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
-            if restaurant_filter is not None:
-                restaurant_filter = str(restaurant_filter).strip() or None
             if sort_mode is not None:
                 sort_mode = str(sort_mode).strip() or None
             if not requested_date:
@@ -1770,7 +1814,7 @@ class Handler(BaseHTTPRequestHandler):
 
             suffix = requested_date
             if restaurant_filter:
-                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", restaurant_filter)[:40]
+                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
                 suffix = f"{suffix}_{safe_name}"
             filename = f"delivery_report_{suffix}.pdf"
             self.send_response(200)
@@ -1789,10 +1833,8 @@ class Handler(BaseHTTPRequestHandler):
             requested_date = (qs.get("date", [None])[0] or None)
             if requested_date is not None:
                 requested_date = str(requested_date).strip() or None
-            restaurant_filter = (qs.get("restaurant", [None])[0] or None)
+            restaurant_filter = _query_restaurant_filters(qs)
             sort_mode = (qs.get("sort", [None])[0] or None)
-            if restaurant_filter is not None:
-                restaurant_filter = str(restaurant_filter).strip() or None
             if sort_mode is not None:
                 sort_mode = str(sort_mode).strip() or None
             try:

@@ -16,7 +16,7 @@
         <a id="download-log-link" class="ghost-link disabled" href="#" target="_blank" rel="noopener">Скачать лог</a>
         <div id="run-indicator" class="run-indicator hidden" aria-live="polite">
           <span class="spinner" aria-hidden="true"></span>
-          <span>Идет выполнение...</span>
+          <span id="run-indicator-text">Идет выполнение...</span>
         </div>
       </div>
     </section>
@@ -29,9 +29,7 @@
         <button id="stop-btn" type="button" class="danger" disabled>Остановить</button>
       </div>
       <div class="row filters">
-        <select id="restaurant-filter">
-          <option value="">Все рестораны</option>
-        </select>
+        <select id="restaurant-filter" multiple size="6" title="Мультивыбор: Ctrl/Cmd или Shift. Пусто = все рестораны."></select>
         <select id="sort-filter">
           <option value="restaurant_asc">Сортировка: ресторан A→Я</option>
           <option value="restaurant_desc">Сортировка: ресторан Я→A</option>
@@ -39,13 +37,14 @@
           <option value="promised_delta_desc">Сортировка: сильнее опоздали к плану</option>
         </select>
       </div>
+      <p class="hint">Фильтр ресторанов: можно выбрать несколько. Если ничего не выбрано, показываются все рестораны.</p>
       <p class="hint">Скрипт использует текущий профиль авторизации Saby. Если нужен пароль, вводите его в открывшемся браузере.</p>
       <div class="status-row">
         <span>Статус:</span>
         <strong id="status">IDLE</strong>
         <div id="run-indicator-inline" class="run-indicator hidden" aria-live="polite">
           <span class="spinner" aria-hidden="true"></span>
-          <span>Выполняется...</span>
+          <span id="run-indicator-inline-text">Выполняется...</span>
         </div>
       </div>
       <div class="row">

@@ -107,6 +107,11 @@ select {
   color: var(--ink);
 }
 
+select[multiple] {
+  min-height: 132px;
+  padding: 8px;
+}
+
 button {
   border: none;
   border-radius: 10px;
