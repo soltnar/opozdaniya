@@ -441,10 +441,10 @@ def _normalize_restaurant_filters(
         return []
     values: list[str] = []
     if isinstance(restaurant_filter, str):
-        values = [x.strip() for x in restaurant_filter.split(",")]
+        values = [restaurant_filter.strip()]
     else:
         for item in restaurant_filter:
-            values.extend([x.strip() for x in str(item or "").split(",")])
+            values.append(str(item or "").strip())
     unique: list[str] = []
     seen: set[str] = set()
     for value in values:
