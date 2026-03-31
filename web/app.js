@@ -187,6 +187,20 @@ function selectedSort() {
   return String(sortFilterEl?.value || 'restaurant_asc').trim();
 }
 
+function setRestaurantOptions(names) {
+  if (!restaurantFilterEl) return;
+  const list = Array.isArray(names)
+    ? names.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const selectedSet = new Set(selectedRestaurants());
+  restaurantFilterEl.innerHTML = list
+    .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+    .join('');
+  Array.from(restaurantFilterEl.options).forEach((opt) => {
+    opt.selected = selectedSet.has(String(opt.value || '').trim());
+  });
+}
+
 function renderBars(container, rows, valueKey, maxValue, valueFormatter) {
   if (!rows || !rows.length) {
     container.innerHTML = '<div class="hint">Нет данных</div>';
@@ -475,9 +489,7 @@ async function loadRestaurantsForDate(dateValue) {
       }
     }
     const selectedSet = current.size ? current : new Set(preferred);
-    restaurantFilterEl.innerHTML = list
-      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
-      .join('');
+    setRestaurantOptions(list);
     Array.from(restaurantFilterEl.options).forEach((opt) => {
       opt.selected = selectedSet.has(String(opt.value || '').trim());
     });
@@ -487,6 +499,14 @@ async function loadRestaurantsForDate(dateValue) {
 }
 
 function renderAnalytics(data) {
+  if (restaurantFilterEl && restaurantFilterEl.options.length === 0) {
+    const fromTotals = Array.isArray(data.restaurant_totals)
+      ? data.restaurant_totals.map((x) => String(x?.restaurant || '').trim()).filter(Boolean)
+      : [];
+    if (fromTotals.length) {
+      setRestaurantOptions(fromTotals);
+    }
+  }
   analyticsPanel.classList.remove('hidden');
   currentAnalyticsDate = data.date || null;
   const restaurantCaption = data.restaurant_filter_caption || selectedRestaurantCaption();
@@ -718,6 +738,7 @@ function startPolling() {
           resultEl.innerHTML = `Готово: <code>${data.output_path}</code>`;
           downloadBtn.disabled = false;
         }
+        await loadRestaurantsForDate(dateInput.value);
         await loadAnalytics();
       } else if (data.status === 'stopped') {
         setStatus('STOPPED', 'stopped');
