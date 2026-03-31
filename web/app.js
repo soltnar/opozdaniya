@@ -32,6 +32,7 @@ let logOffset = 0;
 let currentAnalyticsDate = null;
 let progressCurrent = 0;
 let progressTotal = 0;
+let progressPhase = '';
 const SELECTED_DATE_KEY = 'saby_selected_date';
 const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurants';
 const SELECTED_SORT_KEY = 'saby_selected_sort';
@@ -68,7 +69,7 @@ function setRunningUi(isRunning) {
 
 function updateLogLink() {
   if (!downloadLogLink) return;
-  const selectedDate = String(dateInput?.value || '').trim();
+  const selectedDate = normalizeDateValue(dateInput?.value || '');
   if (activeJobId) {
     downloadLogLink.classList.remove('disabled');
     downloadLogLink.setAttribute('href', `/api/log_download?job_id=${encodeURIComponent(String(activeJobId))}`);
@@ -88,31 +89,61 @@ function setProgressText(text) {
   if (runIndicatorInlineTextEl) runIndicatorInlineTextEl.textContent = text;
 }
 
+function normalizeDateValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const dm = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (dm) {
+    const d = String(dm[1]).padStart(2, '0');
+    const m = String(dm[2]).padStart(2, '0');
+    const y = String(dm[3]);
+    return `${y}-${m}-${d}`;
+  }
+  return raw;
+}
+
 function renderProgress() {
+  const phasePrefix = progressPhase ? `${progressPhase} · ` : '';
   if (progressCurrent > 0 && progressTotal > 0) {
     const pct = Math.min(100, Math.max(0, Math.round((progressCurrent / progressTotal) * 100)));
-    setProgressText(`Идет выполнение... ${progressCurrent}/${progressTotal} (${pct}%)`);
+    setProgressText(`Идет выполнение... ${phasePrefix}${progressCurrent}/${progressTotal} (${pct}%)`);
     return;
   }
   if (progressTotal > 0) {
-    setProgressText(`Идет выполнение... 0/${progressTotal} (0%)`);
+    setProgressText(`Идет выполнение... ${phasePrefix}0/${progressTotal} (0%)`);
     return;
   }
-  setProgressText('Идет выполнение...');
+  setProgressText(`Идет выполнение... ${phasePrefix}`.trim());
 }
 
 function updateProgressFromLine(line) {
   const text = String(line || '');
   const historyMatch = text.match(/\[history\]\s*(\d+)\s*\/\s*(\d+)/i);
   if (historyMatch) {
+    progressPhase = 'История статусов';
     progressCurrent = Math.max(progressCurrent, Number(historyMatch[1]) || 0);
     progressTotal = Math.max(progressTotal, Number(historyMatch[2]) || 0);
     renderProgress();
     return;
   }
+  const ordersMatch = text.match(/\[orders\].*всего=(\d+)/i);
+  if (ordersMatch) {
+    progressPhase = 'Загрузка реестра';
+    progressCurrent = Math.max(progressCurrent, Number(ordersMatch[1]) || 0);
+    progressTotal = Math.max(progressTotal, progressCurrent);
+    renderProgress();
+    return;
+  }
   const totalMatch = text.match(/Найдено заказов:\s*(\d+)/i);
   if (totalMatch) {
+    progressPhase = 'История статусов';
     progressTotal = Math.max(progressTotal, Number(totalMatch[1]) || 0);
+    renderProgress();
+    return;
+  }
+  if (/Ожидаю авторизац/i.test(text) || /Ожидаю готовность API/i.test(text)) {
+    progressPhase = 'Ожидание авторизации';
     renderProgress();
   }
 }
@@ -132,6 +163,20 @@ async function api(path, options = {}) {
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
   return res.json();
+}
+
+async function fetchBlobOrThrow(url) {
+  const res = await fetch(url);
+  const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+  if (!res.ok || contentType.includes('application/json') || contentType.includes('text/plain')) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+  const blob = await res.blob();
+  if (!blob || blob.size === 0) {
+    throw new Error('Пустой файл в ответе сервера');
+  }
+  return blob;
 }
 
 function escapeHtml(value) {
@@ -472,7 +517,7 @@ function renderOrders(rows, thresholds) {
 }
 
 async function loadRestaurantsForDate(dateValue) {
-  const date = String(dateValue || '').trim();
+  const date = normalizeDateValue(dateValue);
   if (!date) return;
   const current = new Set(selectedRestaurants());
   try {
@@ -557,7 +602,7 @@ function renderAnalytics(data) {
 }
 
 async function loadAnalytics(options = {}) {
-  const selectedDate = String(dateInput.value || '').trim();
+  const selectedDate = normalizeDateValue(dateInput.value || '');
   const restaurants = selectedRestaurants();
   const sort = selectedSort();
   const useSelectedDate = Boolean(options.useSelectedDate) && Boolean(selectedDate);
@@ -660,7 +705,7 @@ async function restoreLatestJob() {
 }
 
 async function runExport() {
-  const date = dateInput.value;
+  const date = normalizeDateValue(dateInput.value);
   if (!date) {
     alert('Укажите дату.');
     return;
@@ -673,6 +718,7 @@ async function runExport() {
   logOffset = 0;
   progressCurrent = 0;
   progressTotal = 0;
+  progressPhase = 'Подготовка';
   renderProgress();
   downloadBtn.disabled = true;
   resetAnalyticsUi();
@@ -761,8 +807,8 @@ function startPolling() {
 
 runBtn.addEventListener('click', runExport);
 stopBtn.addEventListener('click', stopExport);
-downloadBtn.addEventListener('click', () => {
-  const date = currentAnalyticsDate || String(dateInput.value || '').trim();
+downloadBtn.addEventListener('click', async () => {
+  const date = currentAnalyticsDate || normalizeDateValue(dateInput.value || '');
   if (!date) return;
   const params = new URLSearchParams();
   params.set('date', date);
@@ -772,10 +818,22 @@ downloadBtn.addEventListener('click', () => {
   if (sort) {
     params.set('sort', sort);
   }
-  window.open(`/api/download?${params.toString()}`, '_blank');
+  try {
+    const blob = await fetchBlobOrThrow(`/api/download?${params.toString()}`);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `delivery_report_${date}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) {
+    alert(`Не удалось выгрузить Excel: ${err.message}`);
+  }
 });
-downloadPdfBtn.addEventListener('click', () => {
-  const date = currentAnalyticsDate || String(dateInput.value || '').trim();
+downloadPdfBtn.addEventListener('click', async () => {
+  const date = currentAnalyticsDate || normalizeDateValue(dateInput.value || '');
   if (!date) return;
   const params = new URLSearchParams();
   params.set('date', date);
@@ -785,14 +843,22 @@ downloadPdfBtn.addEventListener('click', () => {
   if (sort) {
     params.set('sort', sort);
   }
-  window.open(`/api/report_pdf?${params.toString()}`, '_blank');
+  try {
+    const blob = await fetchBlobOrThrow(`/api/report_pdf?${params.toString()}`);
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (err) {
+    alert(`Не удалось выгрузить PDF: ${err.message}`);
+  }
 });
 
 refreshAnalyticsBtn.addEventListener('click', () => loadAnalytics({ useSelectedDate: true }));
 dateInput.addEventListener('change', async () => {
-  const selected = String(dateInput.value || '').trim();
+  const selected = normalizeDateValue(dateInput.value || '');
   if (selected) {
     localStorage.setItem(SELECTED_DATE_KEY, selected);
+    dateInput.value = selected;
   }
   updateLogLink();
   if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
@@ -816,7 +882,7 @@ sortFilterEl.addEventListener('change', () => {
   loadAnalytics({ useSelectedDate: true });
 });
 
-dateInput.value = localStorage.getItem(SELECTED_DATE_KEY) || todayIso();
+dateInput.value = normalizeDateValue(localStorage.getItem(SELECTED_DATE_KEY) || todayIso());
 sortFilterEl.value = localStorage.getItem(SELECTED_SORT_KEY) || 'restaurant_asc';
 loadRestaurantsForDate(dateInput.value);
 if (window.APP_META) {

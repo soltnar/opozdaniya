@@ -94,6 +94,10 @@ def run_export_job(job_id: str, date_value: str) -> None:
     def run_once(cmd: list[str]) -> tuple[int, list[str]]:
         nonlocal output_path
         append_log(job_id, f"[server] start: {' '.join(cmd)}")
+        proc_env = os.environ.copy()
+        # Keep worker stdout line-buffered in frozen EXE mode so UI progress updates smoothly.
+        proc_env.setdefault("PYTHONUNBUFFERED", "1")
+        proc_env.setdefault("PYTHONIOENCODING", "utf-8")
 
         process = subprocess.Popen(
             cmd,
@@ -102,6 +106,7 @@ def run_export_job(job_id: str, date_value: str) -> None:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=proc_env,
         )
         run_lines: list[str] = []
         with JOB_LOCK:
@@ -348,18 +353,30 @@ def _resolve_job_output(job_id: str | None):
 
 
 def _resolve_output_by_date(date_value: str):
-    try:
-        datetime.strptime(date_value, "%Y-%m-%d")
-    except ValueError as exc:
-        raise RuntimeError("date must be YYYY-MM-DD") from exc
+    normalized_date = _normalize_date_input(date_value)
+    if not normalized_date:
+        raise RuntimeError("date must be YYYY-MM-DD")
 
-    file_path = (ROOT / "exports" / f"order_status_history_{date_value}.xlsx").resolve()
+    file_path = (ROOT / "exports" / f"order_status_history_{normalized_date}.xlsx").resolve()
     allowed_root = (ROOT / "exports").resolve()
     if not str(file_path).startswith(str(allowed_root)):
         raise RuntimeError("forbidden output path")
     if not file_path.exists() or not file_path.is_file():
         raise RuntimeError("output file not found")
     return file_path
+
+
+def _normalize_date_input(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _sort_orders(rows: list[dict], sort_mode: str | None) -> list[dict]:
@@ -1025,27 +1042,31 @@ def _ensure_pdf_font() -> str:
 
 
 def _list_restaurants(file_path: Path) -> list[str]:
-    wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
-    rows = _sheet_dict_rows(wb["Реестр"]) if "Реестр" in wb.sheetnames else []
     names = set()
-    for row in rows:
-        name = (
-            row.get("WarehouseName")
-            or row.get("CompanyName")
-            or row.get("RealCompanyName")
-            or row.get("OriginCompanyName")
-            or row.get("SalesPointName")
-            or ""
-        )
-        text = str(name).strip()
-        if text:
-            names.add(text)
+    # Приоритетно строим список через аналитику: там уже унифицирована логика имени ресторана.
+    try:
+        payload = build_analytics_payload(file_path, restaurant_filter=None, sort_mode="restaurant_asc")
+        for item in payload.get("restaurant_totals") or []:
+            text = str(item.get("restaurant") or "").strip()
+            if text:
+                names.add(text)
+    except Exception:
+        pass
 
     if not names:
         try:
-            payload = build_analytics_payload(file_path, restaurant_filter=None, sort_mode="restaurant_asc")
-            for item in payload.get("restaurant_totals") or []:
-                text = str(item.get("restaurant") or "").strip()
+            wb = load_workbook(filename=str(file_path), data_only=True, read_only=True)
+            rows = _sheet_dict_rows(wb["Реестр"]) if "Реестр" in wb.sheetnames else []
+            for row in rows:
+                name = (
+                    row.get("WarehouseName")
+                    or row.get("CompanyName")
+                    or row.get("RealCompanyName")
+                    or row.get("OriginCompanyName")
+                    or row.get("SalesPointName")
+                    or ""
+                )
+                text = str(name).strip()
                 if text:
                     names.add(text)
         except Exception:
@@ -1615,336 +1636,340 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
 
-        if path == "/api/health":
-            self.send_json({"ok": True, "time": now_iso()})
-            return
+            if path == "/api/health":
+                self.send_json({"ok": True, "time": now_iso()})
+                return
 
-        if path == "/api/latest":
-            with JOB_LOCK:
-                job = JOBS.get(LATEST_JOB_ID) if LATEST_JOB_ID else None
-                if not job:
-                    self.send_json({"job": None})
-                    return
-                self.send_json({"job": {k: v for k, v in job.items() if k != "logs"}})
-            return
+            if path == "/api/latest":
+                with JOB_LOCK:
+                    job = JOBS.get(LATEST_JOB_ID) if LATEST_JOB_ID else None
+                    if not job:
+                        self.send_json({"job": None})
+                        return
+                    self.send_json({"job": {k: v for k, v in job.items() if k != "logs"}})
+                return
 
-        if path.startswith("/api/job/"):
-            job_id = path.split("/api/job/", 1)[1]
-            from_idx = 0
-            qs = parse_qs(parsed.query)
-            if "from" in qs:
+            if path.startswith("/api/job/"):
+                job_id = path.split("/api/job/", 1)[1]
+                from_idx = 0
+                qs = parse_qs(parsed.query)
+                if "from" in qs:
+                    try:
+                        from_idx = max(0, int(qs["from"][0]))
+                    except ValueError:
+                        from_idx = 0
+
+                with JOB_LOCK:
+                    job = JOBS.get(job_id)
+                    if not job:
+                        self.send_json({"error": "job not found"}, status=404)
+                        return
+                    logs = job.get("logs", [])
+                    payload = {
+                        "id": job["id"],
+                        "date": job["date"],
+                        "status": job["status"],
+                        "started_at": job["started_at"],
+                        "ended_at": job.get("ended_at"),
+                        "output_path": job.get("output_path"),
+                        "error": job.get("error"),
+                        "logs": logs[from_idx:],
+                        "log_size": len(logs),
+                    }
+                self.send_json(payload)
+                return
+
+            if path == "/api/download":
+                qs = parse_qs(parsed.query)
+                requested_id = (qs.get("job_id", [None])[0] or None)
+                if requested_id is not None:
+                    requested_id = str(requested_id).strip() or None
+                requested_date = (qs.get("date", [None])[0] or None)
+                restaurant_filter = _query_restaurant_filters(qs)
+                sort_mode = (qs.get("sort", [None])[0] or None)
+                if requested_date is not None:
+                    requested_date = str(requested_date).strip() or None
+                if sort_mode is not None:
+                    sort_mode = str(sort_mode).strip() or None
+
                 try:
-                    from_idx = max(0, int(qs["from"][0]))
-                except ValueError:
-                    from_idx = 0
-
-            with JOB_LOCK:
-                job = JOBS.get(job_id)
-                if not job:
-                    self.send_json({"error": "job not found"}, status=404)
+                    if requested_date:
+                        file_path = _resolve_output_by_date(requested_date)
+                    else:
+                        _, _, file_path = _resolve_job_output(requested_id)
+                    content = _build_excel_report(
+                        file_path,
+                        restaurant_filter=restaurant_filter,
+                        sort_mode=sort_mode,
+                    )
+                except RuntimeError as err:
+                    message = str(err)
+                    if message == "job not found":
+                        self.send_json({"error": message}, status=404)
+                    elif message == "job is not completed successfully":
+                        self.send_json({"error": message}, status=409)
+                    elif message == "date must be YYYY-MM-DD":
+                        self.send_json({"error": message}, status=400)
+                    elif message == "forbidden output path":
+                        self.send_json({"error": message}, status=403)
+                    else:
+                        self.send_json({"error": message}, status=404)
                     return
-                logs = job.get("logs", [])
-                payload = {
-                    "id": job["id"],
-                    "date": job["date"],
-                    "status": job["status"],
-                    "started_at": job["started_at"],
-                    "ended_at": job.get("ended_at"),
-                    "output_path": job.get("output_path"),
-                    "error": job.get("error"),
-                    "logs": logs[from_idx:],
-                    "log_size": len(logs),
-                }
-            self.send_json(payload)
-            return
+                except Exception as err:  # noqa: BLE001
+                    self.send_json({"error": f"excel report failed: {err}"}, status=500)
+                    return
 
-        if path == "/api/download":
-            qs = parse_qs(parsed.query)
-            requested_id = (qs.get("job_id", [None])[0] or None)
-            if requested_id is not None:
-                requested_id = str(requested_id).strip() or None
-            requested_date = (qs.get("date", [None])[0] or None)
-            restaurant_filter = _query_restaurant_filters(qs)
-            sort_mode = (qs.get("sort", [None])[0] or None)
-            if requested_date is not None:
-                requested_date = str(requested_date).strip() or None
-            if sort_mode is not None:
-                sort_mode = str(sort_mode).strip() or None
+                suffix = requested_date or "latest"
+                if restaurant_filter:
+                    safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
+                    suffix = f"{suffix}_{safe_name}"
+                filename = f"delivery_report_{suffix}.xlsx"
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
-            try:
-                if requested_date:
+            if path == "/api/log_download":
+                qs = parse_qs(parsed.query)
+                requested_id = (qs.get("job_id", [None])[0] or None)
+                requested_date = (qs.get("date", [None])[0] or None)
+                if requested_id is not None:
+                    requested_id = str(requested_id).strip() or None
+                if requested_date is not None:
+                    requested_date = str(requested_date).strip() or None
+
+                with JOB_LOCK:
+                    target_job = None
+                    if requested_id:
+                        target_job = JOBS.get(requested_id)
+                    elif requested_date:
+                        date_jobs = [j for j in JOBS.values() if str(j.get("date")) == requested_date]
+                        if date_jobs:
+                            date_jobs.sort(key=lambda x: str(x.get("started_at") or ""), reverse=True)
+                            target_job = date_jobs[0]
+                    elif LATEST_JOB_ID:
+                        target_job = JOBS.get(LATEST_JOB_ID)
+
+                if not target_job:
+                    self.send_json({"error": "log source not found"}, status=404)
+                    return
+
+                log_lines = target_job.get("logs", [])
+                if not isinstance(log_lines, list):
+                    log_lines = []
+                header = [
+                    f"job_id: {target_job.get('id')}",
+                    f"date: {target_job.get('date')}",
+                    f"status: {target_job.get('status')}",
+                    f"started_at: {target_job.get('started_at')}",
+                    f"ended_at: {target_job.get('ended_at')}",
+                    "",
+                ]
+                text = "\n".join(header + [str(line) for line in log_lines]) + "\n"
+                body = text.encode("utf-8", errors="replace")
+                date_part = str(target_job.get("date") or "unknown")
+                job_part = str(target_job.get("id") or "latest")[:12]
+                filename = f"saby_export_{date_part}_{job_part}.log"
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if path == "/api/restaurants":
+                qs = parse_qs(parsed.query)
+                requested_date = _normalize_date_input(qs.get("date", [None])[0] if qs.get("date") else None)
+                if not requested_date:
+                    self.send_json({"error": "date is required"}, status=400)
+                    return
+                try:
                     file_path = _resolve_output_by_date(requested_date)
-                else:
-                    _, _, file_path = _resolve_job_output(requested_id)
-                content = _build_excel_report(
-                    file_path,
-                    restaurant_filter=restaurant_filter,
-                    sort_mode=sort_mode,
-                )
-            except RuntimeError as err:
-                message = str(err)
-                if message == "job not found":
-                    self.send_json({"error": message}, status=404)
-                elif message == "job is not completed successfully":
-                    self.send_json({"error": message}, status=409)
-                elif message == "date must be YYYY-MM-DD":
-                    self.send_json({"error": message}, status=400)
-                elif message == "forbidden output path":
-                    self.send_json({"error": message}, status=403)
-                else:
-                    self.send_json({"error": message}, status=404)
-                return
-            except Exception as err:  # noqa: BLE001
-                self.send_json({"error": f"excel report failed: {err}"}, status=500)
+                    restaurants = _list_restaurants(file_path)
+                except RuntimeError as err:
+                    message = str(err)
+                    code = 404
+                    if message == "date must be YYYY-MM-DD":
+                        code = 400
+                    elif message == "forbidden output path":
+                        code = 403
+                    self.send_json({"error": message}, status=code)
+                    return
+                self.send_json({"date": requested_date, "restaurants": restaurants})
                 return
 
-            suffix = requested_date or "latest"
-            if restaurant_filter:
-                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
-                suffix = f"{suffix}_{safe_name}"
-            filename = f"delivery_report_{suffix}.xlsx"
-            self.send_response(200)
-            self.send_header(
-                "Content-Type",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            return
-
-        if path == "/api/log_download":
-            qs = parse_qs(parsed.query)
-            requested_id = (qs.get("job_id", [None])[0] or None)
-            requested_date = (qs.get("date", [None])[0] or None)
-            if requested_id is not None:
-                requested_id = str(requested_id).strip() or None
-            if requested_date is not None:
-                requested_date = str(requested_date).strip() or None
-
-            with JOB_LOCK:
-                target_job = None
-                if requested_id:
-                    target_job = JOBS.get(requested_id)
-                elif requested_date:
-                    date_jobs = [j for j in JOBS.values() if str(j.get("date")) == requested_date]
-                    if date_jobs:
-                        date_jobs.sort(key=lambda x: str(x.get("started_at") or ""), reverse=True)
-                        target_job = date_jobs[0]
-                elif LATEST_JOB_ID:
-                    target_job = JOBS.get(LATEST_JOB_ID)
-
-            if not target_job:
-                self.send_json({"error": "log source not found"}, status=404)
-                return
-
-            log_lines = target_job.get("logs", [])
-            if not isinstance(log_lines, list):
-                log_lines = []
-            header = [
-                f"job_id: {target_job.get('id')}",
-                f"date: {target_job.get('date')}",
-                f"status: {target_job.get('status')}",
-                f"started_at: {target_job.get('started_at')}",
-                f"ended_at: {target_job.get('ended_at')}",
-                "",
-            ]
-            text = "\n".join(header + [str(line) for line in log_lines]) + "\n"
-            body = text.encode("utf-8", errors="replace")
-            date_part = str(target_job.get("date") or "unknown")
-            job_part = str(target_job.get("id") or "latest")[:12]
-            filename = f"saby_export_{date_part}_{job_part}.log"
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        if path == "/api/restaurants":
-            qs = parse_qs(parsed.query)
-            requested_date = (qs.get("date", [None])[0] or None)
-            if requested_date is not None:
-                requested_date = str(requested_date).strip() or None
-            if not requested_date:
-                self.send_json({"error": "date is required"}, status=400)
-                return
-            try:
-                file_path = _resolve_output_by_date(requested_date)
-                restaurants = _list_restaurants(file_path)
-            except RuntimeError as err:
-                message = str(err)
-                code = 404
-                if message == "date must be YYYY-MM-DD":
-                    code = 400
-                elif message == "forbidden output path":
-                    code = 403
-                self.send_json({"error": message}, status=code)
-                return
-            self.send_json({"date": requested_date, "restaurants": restaurants})
-            return
-
-        if path == "/api/report_pdf":
-            qs = parse_qs(parsed.query)
-            requested_date = (qs.get("date", [None])[0] or None)
-            restaurant_filter = _query_restaurant_filters(qs)
-            sort_mode = (qs.get("sort", [None])[0] or None)
-            if requested_date is not None:
-                requested_date = str(requested_date).strip() or None
-            if sort_mode is not None:
-                sort_mode = str(sort_mode).strip() or None
-            if not requested_date:
-                self.send_json({"error": "date is required"}, status=400)
-                return
-            try:
-                file_path = _resolve_output_by_date(requested_date)
-                content = _build_pdf_report(
-                    file_path,
-                    restaurant_filter=restaurant_filter,
-                    sort_mode=sort_mode,
-                )
-            except RuntimeError as err:
-                message = str(err)
-                code = 404
-                if message == "date must be YYYY-MM-DD":
-                    code = 400
-                elif message == "forbidden output path":
-                    code = 403
-                self.send_json({"error": message}, status=code)
-                return
-            except Exception as err:  # noqa: BLE001
-                self.send_json({"error": f"pdf report failed: {err}"}, status=500)
-                return
-
-            suffix = requested_date
-            if restaurant_filter:
-                safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
-                suffix = f"{suffix}_{safe_name}"
-            filename = f"delivery_report_{suffix}.pdf"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/pdf")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            return
-
-        if path == "/api/analytics":
-            qs = parse_qs(parsed.query)
-            requested_id = (qs.get("job_id", [None])[0] or None)
-            if requested_id is not None:
-                requested_id = str(requested_id).strip() or None
-            requested_date = (qs.get("date", [None])[0] or None)
-            if requested_date is not None:
-                requested_date = str(requested_date).strip() or None
-            restaurant_filter = _query_restaurant_filters(qs)
-            sort_mode = (qs.get("sort", [None])[0] or None)
-            if sort_mode is not None:
-                sort_mode = str(sort_mode).strip() or None
-            try:
-                if requested_date:
+            if path == "/api/report_pdf":
+                qs = parse_qs(parsed.query)
+                requested_date = _normalize_date_input(qs.get("date", [None])[0] if qs.get("date") else None)
+                restaurant_filter = _query_restaurant_filters(qs)
+                sort_mode = (qs.get("sort", [None])[0] or None)
+                if sort_mode is not None:
+                    sort_mode = str(sort_mode).strip() or None
+                if not requested_date:
+                    self.send_json({"error": "date is required"}, status=400)
+                    return
+                try:
                     file_path = _resolve_output_by_date(requested_date)
-                    target_id = None
-                    job = {"date": requested_date}
-                else:
-                    target_id, job, file_path = _resolve_job_output(requested_id)
-                payload = build_analytics_payload(
-                    file_path,
-                    restaurant_filter=restaurant_filter,
-                    sort_mode=sort_mode,
+                    content = _build_pdf_report(
+                        file_path,
+                        restaurant_filter=restaurant_filter,
+                        sort_mode=sort_mode,
+                    )
+                except RuntimeError as err:
+                    message = str(err)
+                    code = 404
+                    if message == "date must be YYYY-MM-DD":
+                        code = 400
+                    elif message == "forbidden output path":
+                        code = 403
+                    self.send_json({"error": message}, status=code)
+                    return
+                except Exception as err:  # noqa: BLE001
+                    self.send_json({"error": f"pdf report failed: {err}"}, status=500)
+                    return
+
+                suffix = requested_date
+                if restaurant_filter:
+                    safe_name = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "_", "_".join(restaurant_filter))[:40]
+                    suffix = f"{suffix}_{safe_name}"
+                filename = f"delivery_report_{suffix}.pdf"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+            if path == "/api/analytics":
+                qs = parse_qs(parsed.query)
+                requested_id = (qs.get("job_id", [None])[0] or None)
+                if requested_id is not None:
+                    requested_id = str(requested_id).strip() or None
+                requested_date = _normalize_date_input(qs.get("date", [None])[0] if qs.get("date") else None)
+                restaurant_filter = _query_restaurant_filters(qs)
+                sort_mode = (qs.get("sort", [None])[0] or None)
+                if sort_mode is not None:
+                    sort_mode = str(sort_mode).strip() or None
+                try:
+                    if requested_date:
+                        file_path = _resolve_output_by_date(requested_date)
+                        target_id = None
+                        job = {"date": requested_date}
+                    else:
+                        target_id, job, file_path = _resolve_job_output(requested_id)
+                    payload = build_analytics_payload(
+                        file_path,
+                        restaurant_filter=restaurant_filter,
+                        sort_mode=sort_mode,
+                    )
+                except RuntimeError as err:
+                    message = str(err)
+                    if message == "job not found":
+                        self.send_json({"error": message}, status=404)
+                    elif message == "job is not completed successfully":
+                        self.send_json({"error": message}, status=409)
+                    elif message == "date must be YYYY-MM-DD":
+                        self.send_json({"error": message}, status=400)
+                    elif message == "forbidden output path":
+                        self.send_json({"error": message}, status=403)
+                    else:
+                        self.send_json({"error": message}, status=404)
+                    return
+                except Exception as err:  # noqa: BLE001
+                    self.send_json({"error": f"analytics parse failed: {err}"}, status=500)
+                    return
+
+                payload.update(
+                    {
+                        "job_id": target_id,
+                        "date": job.get("date"),
+                        "output_path": str(file_path),
+                        "generated_at": now_iso(),
+                        "restaurant_filter": restaurant_filter,
+                    }
                 )
-            except RuntimeError as err:
-                message = str(err)
-                if message == "job not found":
-                    self.send_json({"error": message}, status=404)
-                elif message == "job is not completed successfully":
-                    self.send_json({"error": message}, status=409)
-                elif message == "date must be YYYY-MM-DD":
-                    self.send_json({"error": message}, status=400)
-                elif message == "forbidden output path":
-                    self.send_json({"error": message}, status=403)
-                else:
-                    self.send_json({"error": message}, status=404)
-                return
-            except Exception as err:  # noqa: BLE001
-                self.send_json({"error": f"analytics parse failed: {err}"}, status=500)
+                self.send_json(payload)
                 return
 
-            payload.update(
-                {
-                    "job_id": target_id,
-                    "date": job.get("date"),
-                    "output_path": str(file_path),
-                    "generated_at": now_iso(),
-                    "restaurant_filter": restaurant_filter,
-                }
-            )
-            self.send_json(payload)
-            return
+            if path == "/":
+                self.serve_static("index.html")
+                return
 
-        if path == "/":
-            self.serve_static("index.html")
-            return
+            if path in {"/styles.css", "/app.js", "/version.js"}:
+                self.serve_static(path.lstrip("/"))
+                return
 
-        if path in {"/styles.css", "/app.js", "/version.js"}:
-            self.serve_static(path.lstrip("/"))
-            return
-
-        self.send_text("not found", status=404)
+            self.send_text("not found", status=404)
+        except Exception as err:  # noqa: BLE001
+            try:
+                self.send_json({"error": f"internal server error: {err}"}, status=500)
+            except Exception:  # noqa: BLE001
+                pass
 
     def do_POST(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/stop":
+        try:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/stop":
+                content_len = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(content_len) if content_len else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError:
+                    payload = {}
+                job_id = payload.get("job_id")
+                if job_id is not None:
+                    job_id = str(job_id).strip() or None
+                try:
+                    result = stop_job(job_id)
+                except RuntimeError as err:
+                    self.send_json({"error": str(err)}, status=409)
+                    return
+                self.send_json(result, status=HTTPStatus.ACCEPTED)
+                return
+
+            if parsed.path != "/api/run":
+                self.send_text("not found", status=404)
+                return
+
             content_len = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(content_len) if content_len else b"{}"
+
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except json.JSONDecodeError:
-                payload = {}
-            job_id = payload.get("job_id")
-            if job_id is not None:
-                job_id = str(job_id).strip() or None
+                self.send_json({"error": "invalid json"}, status=400)
+                return
+
+            date_value = _normalize_date_input(payload.get("date"))
+            if not date_value:
+                self.send_json({"error": "date must be YYYY-MM-DD"}, status=400)
+                return
+
             try:
-                result = stop_job(job_id)
+                job = create_job(date_value)
             except RuntimeError as err:
                 self.send_json({"error": str(err)}, status=409)
                 return
-            self.send_json(result, status=HTTPStatus.ACCEPTED)
-            return
 
-        if parsed.path != "/api/run":
-            self.send_text("not found", status=404)
-            return
-
-        content_len = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(content_len) if content_len else b"{}"
-
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            self.send_json({"error": "invalid json"}, status=400)
-            return
-
-        date_value = str(payload.get("date", "")).strip()
-        try:
-            datetime.strptime(date_value, "%Y-%m-%d")
-        except ValueError:
-            self.send_json({"error": "date must be YYYY-MM-DD"}, status=400)
-            return
-
-        try:
-            job = create_job(date_value)
-        except RuntimeError as err:
-            self.send_json({"error": str(err)}, status=409)
-            return
-
-        self.send_json({"job_id": job["id"], "status": job["status"]}, status=HTTPStatus.ACCEPTED)
+            self.send_json({"job_id": job["id"], "status": job["status"]}, status=HTTPStatus.ACCEPTED)
+        except Exception as err:  # noqa: BLE001
+            try:
+                self.send_json({"error": f"internal server error: {err}"}, status=500)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def main() -> int:

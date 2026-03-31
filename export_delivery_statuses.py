@@ -301,7 +301,6 @@ def make_default_history_payload_template() -> dict[str, Any]:
                 "_type": "record",
                 "f": 0,
             },
-            "ДопПоля": [],
         },
     }
 
@@ -829,8 +828,12 @@ def wait_until_service_ready(
     seen_modes: set[str] = set()
     mode_order = [m for m in mode_order if not (m in seen_modes or seen_modes.add(m))]
 
+    wait_started = time.time()
+    next_auth_report_at = 0.0
+
     while True:
         errors: list[str] = []
+        auth_failed = False
         for client in clients:
             for mode in mode_order:
                 payload = build_sale_payload(
@@ -848,7 +851,13 @@ def wait_until_service_ready(
                         print(f"Автоподбор сигнатуры SaleOrder.List: {preferred_mode} -> {mode}")
                     return client
                 except Exception as err:  # noqa: BLE001
-                    errors.append(str(err))
+                    msg = str(err)
+                    errors.append(msg)
+                    if "RPC HTTP error 401" in msg:
+                        auth_failed = True
+                        break
+            if auth_failed:
+                break
 
         format_errors = [
             msg
@@ -868,20 +877,24 @@ def wait_until_service_ready(
 
         unauthorized_errors = [msg for msg in errors if "RPC HTTP error 401" in msg]
         if unauthorized_errors:
-            print()
-            print("Похоже, сессия не авторизована или пароль еще не введен.")
-            print("Последние ошибки API:")
-            for idx, msg in enumerate(errors, start=1):
-                print(f"  {idx}. {msg}")
+            now_ts = time.time()
+            if now_ts >= next_auth_report_at:
+                elapsed = int(now_ts - wait_started)
+                print(
+                    "Ожидаю авторизацию в окне браузера "
+                    f"(ожидание {elapsed} сек)..."
+                )
+                if errors:
+                    print(f"Последняя ошибка API: {errors[0]}")
+                next_auth_report_at = now_ts + 10
             if (not non_interactive) and sys.stdin is not None and sys.stdin.isatty():
                 print("Введите пароль/подтвердите вход в окне браузера и нажмите Enter.")
                 try:
                     input()
                 except EOFError:
-                    time.sleep(3)
+                    time.sleep(2)
             else:
-                print("Ожидаю авторизацию в окне браузера (авторежим, повтор через 3 сек)...")
-                time.sleep(3)
+                time.sleep(2)
             try:
                 page.bring_to_front()
             except Exception:  # noqa: BLE001
@@ -923,20 +936,24 @@ def wait_until_service_ready(
                 f"Пример ошибки: {cursor_errors[0]}"
             )
 
-        print()
-        print("Похоже, сессия не авторизована или пароль еще не введен.")
-        print("Последние ошибки API:")
-        for idx, msg in enumerate(errors, start=1):
-            print(f"  {idx}. {msg}")
+        now_ts = time.time()
+        if now_ts >= next_auth_report_at:
+            elapsed = int(now_ts - wait_started)
+            print(
+                "Ожидаю готовность API/авторизацию "
+                f"(ожидание {elapsed} сек)..."
+            )
+            if errors:
+                print(f"Последняя ошибка API: {errors[0]}")
+            next_auth_report_at = now_ts + 10
         if (not non_interactive) and sys.stdin is not None and sys.stdin.isatty():
             print("Введите пароль/подтвердите вход в окне браузера и нажмите Enter.")
             try:
                 input()
             except EOFError:
-                time.sleep(3)
+                time.sleep(2)
         else:
-            print("Ожидаю авторизацию в окне браузера (авторежим, повтор через 3 сек)...")
-            time.sleep(3)
+            time.sleep(2)
         try:
             page.bring_to_front()
         except Exception:  # noqa: BLE001
@@ -1587,8 +1604,8 @@ def build_history_payload(
         raise RuntimeError("Некорректный шаблон: params.Фильтр отсутствует")
 
     params.setdefault("Сортировка", None)
-    if not isinstance(params.get("ДопПоля"), list):
-        params["ДопПоля"] = []
+    if "ДопПоля" in params and not isinstance(params.get("ДопПоля"), list):
+        params.pop("ДопПоля", None)
 
     upsert_record_field(filter_record, "Period", "Строка", None)
     upsert_record_field(filter_record, "reverse_navigation", "Логическое", True)
@@ -1911,6 +1928,11 @@ def is_history_method_not_found_error(message: str) -> bool:
     )
 
 
+def is_history_unknown_field_error(message: str) -> bool:
+    msg = (message or "").lower()
+    return ("в объекте нет поля" in msg) or ("object has no field" in msg)
+
+
 def history_method_variants(
     template: TemplateBundle,
     payload: dict[str, Any],
@@ -1938,18 +1960,29 @@ def history_payload_variants(
     preferred_mode: str = "full",
 ) -> list[tuple[str, dict[str, Any]]]:
     full_payload = copy.deepcopy(payload)
+    full_no_extra_payload = copy.deepcopy(payload)
     filter_only_payload = copy.deepcopy(payload)
+    filter_only_no_extra_payload = copy.deepcopy(payload)
     params = filter_only_payload.get("params", {})
     if isinstance(params, dict):
         params.pop("Навигация", None)
+    params_full_no_extra = full_no_extra_payload.get("params", {})
+    if isinstance(params_full_no_extra, dict):
+        params_full_no_extra.pop("ДопПоля", None)
+    params_filter_no_extra = filter_only_no_extra_payload.get("params", {})
+    if isinstance(params_filter_no_extra, dict):
+        params_filter_no_extra.pop("Навигация", None)
+        params_filter_no_extra.pop("ДопПоля", None)
 
     variants: list[tuple[str, dict[str, Any]]] = [
         ("full", full_payload),
+        ("full_no_extra", full_no_extra_payload),
         ("filter_only", filter_only_payload),
+        ("filter_only_no_extra", filter_only_no_extra_payload),
     ]
     ordered: list[tuple[str, dict[str, Any]]] = []
-    preferred = preferred_mode if preferred_mode in {"full", "filter_only"} else "full"
-    for mode in (preferred, "full", "filter_only"):
+    preferred = preferred_mode if preferred_mode in {"full", "full_no_extra", "filter_only", "filter_only_no_extra"} else "full"
+    for mode in (preferred, "full", "full_no_extra", "filter_only", "filter_only_no_extra"):
         for item_mode, item_payload in variants:
             if item_mode != mode:
                 continue
@@ -2012,6 +2045,9 @@ def call_history_with_auto_method(
                     return result
                 except Exception as err:  # noqa: BLE001
                     last_err = err
+                    if is_history_unknown_field_error(str(err)):
+                        setattr(template, "_history_signature_mode", "full_no_extra")
+                        continue
                     if not is_history_method_not_found_error(str(err)):
                         raise
                     continue
