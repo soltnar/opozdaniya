@@ -301,8 +301,23 @@ def make_default_history_payload_template() -> dict[str, Any]:
                 "_type": "record",
                 "f": 0,
             },
+            "ДопПоля": [],
         },
     }
+
+
+def normalize_runtime_sale_payload_template(payload: dict[str, Any]) -> dict[str, Any]:
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        params = {}
+        payload["params"] = params
+
+    # В ряде Win-контуров runtime-копия SaleOrder.List может прийти без ДопПоля,
+    # что затем приводит к вызову /3 и нестабильным 404. Держим безопасный /4-вид.
+    if not isinstance(params.get("ДопПоля"), list):
+        params["ДопПоля"] = ["RelatedSales", "Reglament"]
+
+    return payload
 
 
 def make_default_sale_payload_template() -> dict[str, Any]:
@@ -363,6 +378,7 @@ def make_runtime_fallback_templates(
     if isinstance(runtime_sale_payload, dict) and isinstance(runtime_sale_payload.get("params"), dict):
         sale_payload = copy.deepcopy(runtime_sale_payload)
         sale_payload.setdefault("method", "SaleOrder.List")
+        sale_payload = normalize_runtime_sale_payload_template(sale_payload)
     else:
         sale_payload = make_default_sale_payload_template()
 
@@ -1604,8 +1620,8 @@ def build_history_payload(
         raise RuntimeError("Некорректный шаблон: params.Фильтр отсутствует")
 
     params.setdefault("Сортировка", None)
-    if "ДопПоля" in params and not isinstance(params.get("ДопПоля"), list):
-        params.pop("ДопПоля", None)
+    if not isinstance(params.get("ДопПоля"), list):
+        params["ДопПоля"] = []
 
     upsert_record_field(filter_record, "Period", "Строка", None)
     upsert_record_field(filter_record, "reverse_navigation", "Логическое", True)

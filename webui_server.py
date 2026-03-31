@@ -19,7 +19,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from openpyxl import Workbook, load_workbook
 from reportlab.lib import colors
@@ -377,6 +377,23 @@ def _normalize_date_input(value: str | None) -> str | None:
         except ValueError:
             continue
     return None
+
+
+def _ascii_filename(value: str, default: str = "download") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    ascii_text = text.encode("ascii", "ignore").decode("ascii")
+    ascii_text = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_text).strip("._")
+    return ascii_text or default
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    # HTTP headers in BaseHTTPRequestHandler are latin-1 encoded; keep ASCII fallback
+    # and provide RFC 5987 UTF-8 filename* for modern browsers.
+    fallback = _ascii_filename(filename)
+    encoded = quote(str(filename), safe="!#$&+-.^_`|~")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _sort_orders(rows: list[dict], sort_mode: str | None) -> list[dict]:
@@ -1733,7 +1750,7 @@ class Handler(BaseHTTPRequestHandler):
                     "Content-Type",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", _content_disposition_attachment(filename))
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
@@ -1783,7 +1800,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", _content_disposition_attachment(filename))
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -1847,7 +1864,7 @@ class Handler(BaseHTTPRequestHandler):
                 filename = f"delivery_report_{suffix}.pdf"
                 self.send_response(200)
                 self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", _content_disposition_attachment(filename))
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
