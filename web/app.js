@@ -33,6 +33,7 @@ let currentAnalyticsDate = null;
 let progressCurrent = 0;
 let progressTotal = 0;
 let progressPhase = '';
+let restoreRequestToken = 0;
 const SELECTED_DATE_KEY = 'saby_selected_date';
 const SELECTED_RESTAURANT_KEY = 'saby_selected_restaurants';
 const SELECTED_SORT_KEY = 'saby_selected_sort';
@@ -103,6 +104,10 @@ function normalizeDateValue(value) {
   return raw;
 }
 
+function isUiRunning() {
+  return String(statusEl.textContent || '').trim() === 'RUNNING';
+}
+
 function renderProgress() {
   const phasePrefix = progressPhase ? `${progressPhase} · ` : '';
   if (progressCurrent > 0 && progressTotal > 0) {
@@ -122,23 +127,37 @@ function updateProgressFromLine(line) {
   const historyMatch = text.match(/\[history\]\s*(\d+)\s*\/\s*(\d+)/i);
   if (historyMatch) {
     progressPhase = 'История статусов';
-    progressCurrent = Math.max(progressCurrent, Number(historyMatch[1]) || 0);
-    progressTotal = Math.max(progressTotal, Number(historyMatch[2]) || 0);
+    const current = Number(historyMatch[1]) || 0;
+    const total = Number(historyMatch[2]) || 0;
+    if (total > 0) {
+      progressTotal = total;
+    }
+    progressCurrent = current;
+    if (progressTotal > 0 && progressCurrent > progressTotal) {
+      progressCurrent = progressTotal;
+    }
     renderProgress();
     return;
   }
   const ordersMatch = text.match(/\[orders\].*всего=(\d+)/i);
   if (ordersMatch) {
     progressPhase = 'Загрузка реестра';
-    progressCurrent = Math.max(progressCurrent, Number(ordersMatch[1]) || 0);
+    progressCurrent = Number(ordersMatch[1]) || 0;
     progressTotal = Math.max(progressTotal, progressCurrent);
     renderProgress();
     return;
   }
   const totalMatch = text.match(/Найдено заказов:\s*(\d+)/i);
   if (totalMatch) {
+    // Переход от "реестра" к "истории": стартуем историю с 0/N.
     progressPhase = 'История статусов';
-    progressTotal = Math.max(progressTotal, Number(totalMatch[1]) || 0);
+    progressCurrent = 0;
+    progressTotal = Number(totalMatch[1]) || 0;
+    renderProgress();
+    return;
+  }
+  if (/Найдено смен статуса:/i.test(text) || /Excel сохранен:/i.test(text) || /PDF сохранен:/i.test(text)) {
+    progressPhase = 'Формирование отчета';
     renderProgress();
     return;
   }
@@ -646,8 +665,11 @@ async function loadAnalytics(options = {}) {
 }
 
 async function restoreLatestJob() {
+  const token = ++restoreRequestToken;
   try {
     const payload = await api('/api/latest');
+    if (token !== restoreRequestToken) return;
+    if (isUiRunning()) return;
     const job = payload?.job;
     if (!job || !job.id) return;
 
@@ -680,6 +702,7 @@ async function restoreLatestJob() {
       setStatus('RUNNING', 'running');
       setRunningUi(true);
       const data = await api(`/api/job/${job.id}?from=0`);
+      if (token !== restoreRequestToken) return;
       appendLogs(data.logs || []);
       logOffset = data.log_size || 0;
       startPolling();
@@ -713,6 +736,8 @@ async function runExport() {
 
   runBtn.disabled = true;
   stopBtn.disabled = false;
+  // Отменяем отложенное восстановление предыдущей задачи, чтобы не подмешивались старые логи.
+  restoreRequestToken += 1;
   setRunningUi(true);
   resultEl.textContent = '';
   logOffset = 0;
@@ -861,14 +886,14 @@ dateInput.addEventListener('change', async () => {
     dateInput.value = selected;
   }
   updateLogLink();
-  if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
+  if (isUiRunning()) return;
   await loadRestaurantsForDate(selected);
   loadAnalytics({ useSelectedDate: true });
 });
 restaurantFilterEl.addEventListener('change', () => {
   const restaurants = selectedRestaurants();
   localStorage.setItem(SELECTED_RESTAURANT_KEY, JSON.stringify(restaurants));
-  if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
+  if (isUiRunning()) return;
   loadAnalytics({ useSelectedDate: true });
 });
 sortFilterEl.addEventListener('change', () => {
@@ -878,7 +903,7 @@ sortFilterEl.addEventListener('change', () => {
   } else {
     localStorage.removeItem(SELECTED_SORT_KEY);
   }
-  if (String(statusEl.textContent || '').trim() === 'RUNNING') return;
+  if (isUiRunning()) return;
   loadAnalytics({ useSelectedDate: true });
 });
 

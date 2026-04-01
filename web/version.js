@@ -1,5 +1,5 @@
 window.APP_META = {
-  version: "2026.03.31-web.100",
-  updatedAt: "2026-03-31",
-  notes: "Restore web.93-compatible history payload + runtime SaleOrder fallback stabilization; fix UTF-8 filenames for downloads on Windows"
+  version: "2026.04.01-web.101",
+  updatedAt: "2026-04-01",
+  notes: "Fix progress phase reset (no early 100%), prevent stale restore logs from polluting a new run, normalize Sale ids between Реестр/Статусы so status analytics load reliably"
 };

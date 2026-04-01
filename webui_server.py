@@ -541,6 +541,26 @@ def build_analytics_payload(
             return ""
         return str(value).strip().lower().replace("ё", "е")
 
+    def norm_sale_id(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            if math.isnan(value):
+                return None
+            if float(value).is_integer():
+                return str(int(value))
+            return str(value).strip()
+        text = str(value).strip()
+        if not text:
+            return None
+        if re.fullmatch(r"\d+\.0+", text):
+            return text.split(".", 1)[0]
+        return text
+
     registry_rows = _sheet_dict_rows(wb["Реестр"]) if "Реестр" in wb.sheetnames else []
     status_rows = _sheet_dict_rows(wb["Статусы"]) if "Статусы" in wb.sheetnames else []
 
@@ -584,8 +604,9 @@ def build_analytics_payload(
 
     orders_meta: dict[Any, dict] = {}
     for row in registry_rows:
-        sale = row.get("Sale")
-        if sale in (None, ""):
+        sale_raw = row.get("Sale")
+        sale = norm_sale_id(sale_raw)
+        if sale is None:
             continue
         restaurant = (
             row.get("WarehouseName")
@@ -595,7 +616,7 @@ def build_analytics_payload(
             or "Не указан"
         )
         orders_meta[sale] = {
-            "sale": sale,
+            "sale": sale_raw if sale_raw not in (None, "") else sale,
             "number": row.get("Number"),
             "restaurant": str(restaurant),
             "courier": row.get("CourierName"),
@@ -609,8 +630,8 @@ def build_analytics_payload(
     events_by_sale: dict[Any, list[tuple[datetime, str, str]]] = defaultdict(list)
     transitions_counter: Counter[tuple[str, str]] = Counter()
     for row in status_rows:
-        sale = row.get("Sale")
-        if sale in (None, ""):
+        sale = norm_sale_id(row.get("Sale"))
+        if sale is None:
             continue
         status_from = str(row.get("StatusFrom") or "").strip()
         status_to = str(row.get("StatusTo") or "").strip()
@@ -816,6 +837,7 @@ def build_analytics_payload(
                 "delay_reason": delay_reason,
                 "bottleneck_stage": bottleneck_stage,
                 "bottleneck_min": bottleneck_min,
+                "_has_statuses": bool(events),
             }
         )
 
@@ -839,6 +861,10 @@ def build_analytics_payload(
             if norm_status(row.get("restaurant")) in targets
         ]
     detailed_orders = _sort_orders(detailed_orders, sort_mode)
+    orders_with_statuses_in_scope = sum(1 for row in detailed_orders if bool(row.get("_has_statuses")))
+
+    for row in detailed_orders:
+        row.pop("_has_statuses", None)
 
     processing_vals = [float(x["processing_min"]) for x in detailed_orders if isinstance(x.get("processing_min"), (int, float))]
     cooking_vals = [float(x["cooking_min"]) for x in detailed_orders if isinstance(x.get("cooking_min"), (int, float))]
@@ -977,7 +1003,7 @@ def build_analytics_payload(
             "overdue_rate": (len(overdue_orders) / total_orders * 100.0) if total_orders else 0.0,
             "delivery_orders": len(delivery_orders),
             "pickup_orders": len(pickup_orders),
-            "orders_with_statuses": len(events_by_sale),
+            "orders_with_statuses": orders_with_statuses_in_scope,
             "no_delivery_stage_count": no_delivery_stage_count,
             "no_delivery_stage_rate": no_delivery_stage_rate,
         },
@@ -992,7 +1018,7 @@ def build_analytics_payload(
         "restaurant_totals": restaurant_totals,
         "problem_orders": problem_orders,
         "status_flow": {
-            "orders_with_statuses": len(events_by_sale),
+            "orders_with_statuses": orders_with_statuses_in_scope,
             "no_delivery_stage_count": no_delivery_stage_count,
             "no_delivery_stage_rate": no_delivery_stage_rate,
             "transitions": transitions,
